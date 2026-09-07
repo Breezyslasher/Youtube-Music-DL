@@ -38,7 +38,10 @@ Standalone: no beets, no external tagger, one container.
    and toggleable in Settings (or BEETDROP_LYRICS). A "Fetch lyrics for
    existing library" button (CLI: `scan-lyrics`) backfills sidecars for
    tracks already in the library that have none yet, using the same
-   source - it runs as a cancellable job in the queue.
+   source - it runs as a cancellable job in the queue. Artist and title
+   come from the tags, falling back to the folder/file names
+   ({Artist}/{Album}/{NN} - {Title} or "Artist - Title"); duration always
+   comes from the decoded audio, so even untagged files can be matched.
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the

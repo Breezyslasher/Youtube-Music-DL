@@ -12,6 +12,7 @@ from beetdrop.app import create_app
 from beetdrop.backfill import (
     backfill_lyrics,
     iter_audio_missing_lyrics,
+    meta_from_path,
     read_track_meta,
 )
 from beetdrop.config import Config
@@ -46,6 +47,28 @@ class TestIterMissing:
 
         found = [p.name for p in iter_audio_missing_lyrics(tmp_path)]
         assert found == ["song.opus"]
+
+
+class TestMetaFromPath:
+    def test_clean_layout(self, tmp_path):
+        p = tmp_path / "AmaLee" / "My Ninja Way (2019)" / "02 - Go.opus"
+        assert meta_from_path(p, tmp_path) == ("AmaLee", "Go", "My Ninja Way")
+
+    def test_disc_prefix_stripped(self, tmp_path):
+        p = tmp_path / "A" / "Album" / "1-04 - Song.mp3"
+        assert meta_from_path(p, tmp_path) == ("A", "Song", "Album")
+
+    def test_review_folder(self, tmp_path):
+        p = tmp_path / "_review" / "AmaLee - Go" / "Go.opus"
+        assert meta_from_path(p, tmp_path) == ("AmaLee", "Go", "")
+
+    def test_flat_artist_dash_title(self, tmp_path):
+        p = tmp_path / "AmaLee - Go.opus"
+        assert meta_from_path(p, tmp_path) == ("AmaLee", "Go", "")
+
+    def test_artist_folder_only(self, tmp_path):
+        p = tmp_path / "AmaLee" / "Go.opus"
+        assert meta_from_path(p, tmp_path) == ("AmaLee", "Go", "")
 
 
 @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
@@ -84,8 +107,10 @@ class TestBackfill:
         dry = config.music_root / "AmaLee" / "dry.opus"
         make_opus(dry)
         write_full_tags(dry, FullTags(title="NoLyrics", artist="AmaLee"))
-        bare = config.music_root / "misc" / "bare.opus"
-        make_opus(bare)  # no tags
+        # Untagged and directly under the root with no "Artist - Title"
+        # name: nothing can be derived, so it is genuinely skipped.
+        bare = config.music_root / "bare.opus"
+        make_opus(bare)
 
         def fake_fetch(artist, title, album="", duration_seconds=None,
                        musixmatch_token="", provider="lrclib"):
@@ -100,6 +125,31 @@ class TestBackfill:
         assert result.skipped == 1
         assert good.with_suffix(".lrc").read_text() == "[00:01.00]la"
         assert not dry.with_suffix(".lrc").exists()
+
+    def test_untagged_file_uses_path_and_duration(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        # No embedded tags at all - artist/title must come from the layout,
+        # and the duration must still come from the decoded audio.
+        track = config.music_root / "AmaLee" / "My Ninja Way (2019)" / "02 - Go.opus"
+        make_opus(track)
+
+        seen = {}
+
+        def fake_fetch(artist, title, album="", duration_seconds=None,
+                       musixmatch_token="", provider="lrclib"):
+            seen.update(artist=artist, title=title, album=album,
+                        duration=duration_seconds)
+            return "[00:01.00]la"
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake_fetch)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        result = backfill_lyrics(config)
+        assert result.added == 1 and result.skipped == 0
+        assert seen["artist"] == "AmaLee"
+        assert seen["title"] == "Go"
+        assert seen["album"] == "My Ninja Way"
+        assert seen["duration"] and seen["duration"] >= 1  # from the audio
+        assert track.with_suffix(".lrc").read_text() == "[00:01.00]la"
 
     def test_existing_lrc_is_skipped(self, tmp_path, monkeypatch):
         config = self._config(tmp_path)

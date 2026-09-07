@@ -178,7 +178,7 @@ class JobManager:
                 if result.no_match:
                     extras.append("%d with no synced lyrics found" % result.no_match)
                 if result.skipped:
-                    extras.append("%d skipped (no tags)" % result.skipped)
+                    extras.append("%d skipped (no title/artist)" % result.skipped)
                 if extras:
                     detail += " (" + ", ".join(extras) + ")"
                 self._update(job_id, stage="done", progress=100.0,

@@ -8,6 +8,7 @@ missing match or a network error is counted and skipped, never fatal.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,11 @@ import mutagen
 from .config import Config
 from .library import write_lyrics_sidecar
 from .lyrics import fetch_synced_lyrics
+
+# Leading track (and disc) number on a filename, e.g. "02 - ", "1-02 - ".
+_TRACK_PREFIX = re.compile(r"^(?:\d+-)?\d+\s*[-.]\s*")
+# Trailing " (1999)" year on an album folder.
+_YEAR_SUFFIX = re.compile(r"\s*\((?:19|20)\d{2}\)\s*$")
 
 # Audio we tag/file; the video library's .mp4 files are ignored.
 AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
@@ -69,6 +75,38 @@ def read_track_meta(path: Path):
     return (first("artist"), first("title"), first("album"), duration)
 
 
+def meta_from_path(path: Path, root: Path):
+    """Best-effort (artist, title, album) from the folder layout and file
+    name when the tags don't carry them. Understands Beetdrop's own layout
+    ({Artist}/{Album} ({Year})/{NN} - {Title}.ext and the _review folder)
+    and a plain "Artist - Title.ext"."""
+    stem = path.stem
+    title = _TRACK_PREFIX.sub("", stem).strip() or stem
+    try:
+        dirs = [d for d in path.relative_to(root).parts[:-1] if d != "_review"]
+    except ValueError:
+        dirs = [d for d in path.parts[:-1] if d != "_review"]
+
+    artist = ""
+    album = ""
+    if len(dirs) >= 2:
+        # {Artist}/{Album} ({Year})/track
+        artist = dirs[-2]
+        album = _YEAR_SUFFIX.sub("", dirs[-1]).strip()
+    elif len(dirs) == 1:
+        folder = dirs[-1]
+        # A "_review" bucket names its subfolder "Artist - Title".
+        if " - " in folder and " - " not in title:
+            artist = folder.split(" - ", 1)[0].strip()
+        else:
+            artist = folder
+    # A "Artist - Title" file name fills in a still-missing artist.
+    if not artist and " - " in title:
+        left, right = title.split(" - ", 1)
+        artist, title = left.strip(), right.strip()
+    return artist, title, album
+
+
 def backfill_lyrics(
     config: Config,
     on_progress: Callable[[float], None] = _noop,
@@ -87,10 +125,19 @@ def backfill_lyrics(
 
     for index, path in enumerate(files):
         meta = read_track_meta(path)
-        if not meta or not (meta[0] and meta[1]):
+        # Duration comes from the decoded audio, so it is available even
+        # when the text tags are not.
+        artist, title, album, duration = meta or ("", "", "", None)
+        if not artist or not title:
+            # Fall back to the folder/file names for a missing artist/title;
+            # keep the real duration read from the file.
+            p_artist, p_title, p_album = meta_from_path(path, config.music_root)
+            artist = artist or p_artist
+            title = title or p_title
+            album = album or p_album
+        if not (artist and title):
             skipped += 1
         else:
-            artist, title, album, duration = meta
             try:
                 lrc = fetch_synced_lyrics(
                     artist, title, album, duration,
