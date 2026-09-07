@@ -14,6 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
+from .backfill import backfill_lyrics
 from .config import Config, check_storage
 from .db import Store
 from .download import LogCollector
@@ -164,6 +165,25 @@ class JobManager:
             return "filed" if verified else "unverified"
 
         try:
+            if job["kind"] == "lyricscan":
+                # Backfill synced lyrics across the whole library. Not a
+                # download; it reads the library it also writes .lrc into.
+                check_storage(config.music_root, config.min_free_mb)
+                self._update(job_id, title="Library lyrics scan", stage="scanning")
+                result = backfill_lyrics(config, on_progress=on_progress,
+                                         on_detail=on_detail)
+                detail = "added lyrics to %d of %d tracks missing them" % (
+                    result.added, result.total)
+                extras = []
+                if result.no_match:
+                    extras.append("%d with no synced lyrics found" % result.no_match)
+                if result.skipped:
+                    extras.append("%d skipped (no tags)" % result.skipped)
+                if extras:
+                    detail += " (" + ", ".join(extras) + ")"
+                self._update(job_id, stage="done", progress=100.0,
+                             detail=detail[:2000], log=collector.text()[:20000])
+                return
             if job["kind"] == "musicvideo":
                 # The video root is a subfolder we create on first use; make
                 # it before the writability check so a fresh install works.

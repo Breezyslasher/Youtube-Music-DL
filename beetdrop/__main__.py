@@ -99,6 +99,20 @@ def cmd_grab(args, config: Config) -> int:
     return 0
 
 
+def cmd_scan_lyrics(args, config: Config) -> int:
+    from .backfill import backfill_lyrics
+    try:
+        check_storage(config.music_root, config.min_free_mb)
+    except StorageError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    result = backfill_lyrics(config, on_detail=lambda text: print(text))
+    print("done: added lyrics to %d of %d tracks missing them "
+          "(%d no match, %d skipped)" % (
+              result.added, result.total, result.no_match, result.skipped))
+    return 0
+
+
 def cmd_serve(args, config: Config) -> int:
     import uvicorn
 
@@ -134,6 +148,10 @@ def main(argv=None) -> int:
     p_grab.add_argument("--bitrate", help="bitrate for mp3 transcodes")
     p_grab.add_argument("--library", help="music library path (overrides MUSIC_PATH)")
     p_grab.set_defaults(func=cmd_grab)
+
+    p_scan = sub.add_parser("scan-lyrics",
+                            help="fetch synced lyrics for library tracks missing them")
+    p_scan.set_defaults(func=cmd_scan_lyrics)
 
     p_serve = sub.add_parser("serve", help="run the web API")
     p_serve.add_argument("--host", default="0.0.0.0")

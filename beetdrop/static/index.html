@@ -130,7 +130,7 @@
       <p v-if="j.stage === 'done' && j.inbox_state === 'unverified'" class="handoff-review">
         No MusicBrainz match - filed to _review
       </p>
-      <p v-else-if="j.stage === 'done'" class="handoff">
+      <p v-else-if="j.stage === 'done' && j.kind !== 'lyricscan'" class="handoff">
         Filed to library
       </p>
     </article>
@@ -225,6 +225,14 @@
       <button type="button" @click="fetchMxmToken" :disabled="fetchingToken">
         {{ fetchingToken ? 'Fetching token...' : 'Fetch Musixmatch token' }}
       </button>
+      <button type="button" @click="scanLyrics" :disabled="scanningLyrics">
+        {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
+      </button>
+      <p class="note">
+        Scans your whole library for tracks that have no .lrc yet and
+        fetches synced lyrics for them using the source above. It runs in
+        the queue and can be cancelled.
+      </p>
 
       <label>Concurrent downloads
         <select v-model="draft.concurrency">

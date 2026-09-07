@@ -401,6 +401,22 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
         store.set_settings({"mxm_token": token})
         return {"ok": True, "token_set": True}
 
+    @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
+    async def api_lyrics_scan():
+        """Backfill synced lyrics for library tracks that have no .lrc yet.
+        Runs as a normal cancellable job so the queue shows its progress."""
+        existing = store.find_duplicate("__library__", "lyricscan")
+        if existing is not None and existing["stage"] not in (
+                "done", "failed", "cancelled"):
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "a library lyrics scan is already running",
+                        "existing_job": {k: existing[k] for k in
+                                         ("id", "title", "stage", "created_at")}})
+        job = manager.enqueue("__library__", kind="lyricscan")
+        # Label it up front so the queue card reads cleanly from the start.
+        return store.update_job(job["id"], title="Library lyrics scan") or job
+
     @app.get("/events", dependencies=[protected])
     async def events(request: Request):
         queue = broadcaster.subscribe()

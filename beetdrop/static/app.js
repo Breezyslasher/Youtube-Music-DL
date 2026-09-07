@@ -20,6 +20,7 @@ createApp({
       grabbing: {},
       updatingYtdlp: false,
       fetchingToken: false,
+      scanningLyrics: false,
 
       jobs: [],
       queueOpen: false,
@@ -316,6 +317,24 @@ createApp({
         if (err.message !== "password required") this.showToast("Token fetch failed: " + err.message);
       } finally {
         this.fetchingToken = false;
+      }
+    },
+
+    async scanLyrics() {
+      this.scanningLyrics = true;
+      try {
+        const job = await this.api("/api/lyrics/scan", { method: "POST" });
+        this.upsertJob(job);
+        this.settingsOpen = false;
+        this.queueOpen = true;
+        this.showToast("Library lyrics scan started");
+      } catch (err) {
+        if (err.message === "password required") return;
+        this.showToast(err.status === 409
+          ? "A library lyrics scan is already running"
+          : "Scan failed: " + err.message);
+      } finally {
+        this.scanningLyrics = false;
       }
     },
 

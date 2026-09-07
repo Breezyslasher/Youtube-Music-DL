@@ -35,7 +35,10 @@ Standalone: no beets, no external tagger, one container.
    first wins. Timed only: results with only plain text are skipped.
    Musixmatch needs a session token - fetch the latest one with a button
    in Settings (same as updating yt-dlp), or paste your own. Best effort,
-   and toggleable in Settings (or BEETDROP_LYRICS).
+   and toggleable in Settings (or BEETDROP_LYRICS). A "Fetch lyrics for
+   existing library" button (CLI: `scan-lyrics`) backfills sidecars for
+   tracks already in the library that have none yet, using the same
+   source - it runs as a cancellable job in the queue.
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the
@@ -100,7 +103,7 @@ POST /api/grab                    {"video_id", "kind", "format", "force"}
 GET  /api/jobs                    POST /api/jobs/{id}/retry|cancel
 GET/PUT /api/settings             GET /api/health   GET /events (SSE)
 POST /api/login                   POST /api/ytdlp/update
-POST /api/lyrics/musixmatch-token
+POST /api/lyrics/musixmatch-token POST /api/lyrics/scan
 ```
 
 ## Running it
@@ -125,6 +128,7 @@ CLI:
 ```
 python -m beetdrop search "artist song" [--albums | --videos]
 python -m beetdrop grab <video_id> [--album | --video] [--format opus|m4a|mp3] [--library PATH]
+python -m beetdrop scan-lyrics                 # backfill .lrc for the library
 python -m beetdrop serve [--host 0.0.0.0] [--port 8090]
 ```
 
