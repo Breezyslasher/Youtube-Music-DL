@@ -20,6 +20,7 @@ createApp({
       grabbing: {},
       updatingYtdlp: false,
       fetchingToken: false,
+      scanningLyrics: false,
 
       jobs: [],
       queueOpen: false,
@@ -237,6 +238,9 @@ createApp({
           // partial/stale settings object never silently flips it.
           lyrics: this.settings.lyrics !== false,
           lyrics_provider: this.settings.lyrics_provider || "lrclib",
+          video_root: this.settings.video_root,
+          video_max_height: this.settings.video_max_height != null
+            ? this.settings.video_max_height : 1080,
           cookies: "",
           new_password: "",
         };
@@ -254,10 +258,14 @@ createApp({
         concurrency: Number(this.draft.concurrency) || undefined,
         lyrics: !!this.draft.lyrics,
         lyrics_provider: this.draft.lyrics_provider,
+        video_max_height: Number(this.draft.video_max_height),
       };
-      // Only send the library path when it is editable (not env-locked).
+      // Only send the library paths when they are editable (not env-locked).
       if (this.settings && !this.settings.music_root_locked) {
         update.music_root = this.draft.music_root;
+      }
+      if (this.settings && !this.settings.video_root_locked) {
+        update.video_root = this.draft.video_root;
       }
       if (this.draft.new_password) update.password = this.draft.new_password;
       if (this.draft.cookies && this.draft.cookies.trim()) update.cookies = this.draft.cookies;
@@ -309,6 +317,24 @@ createApp({
         if (err.message !== "password required") this.showToast("Token fetch failed: " + err.message);
       } finally {
         this.fetchingToken = false;
+      }
+    },
+
+    async scanLyrics() {
+      this.scanningLyrics = true;
+      try {
+        const job = await this.api("/api/lyrics/scan", { method: "POST" });
+        this.upsertJob(job);
+        this.settingsOpen = false;
+        this.queueOpen = true;
+        this.showToast("Library lyrics scan started");
+      } catch (err) {
+        if (err.message === "password required") return;
+        this.showToast(err.status === 409
+          ? "A library lyrics scan is already running"
+          : "Scan failed: " + err.message);
+      } finally {
+        this.scanningLyrics = false;
       }
     },
 

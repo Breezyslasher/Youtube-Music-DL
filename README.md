@@ -35,7 +35,13 @@ Standalone: no beets, no external tagger, one container.
    first wins. Timed only: results with only plain text are skipped.
    Musixmatch needs a session token - fetch the latest one with a button
    in Settings (same as updating yt-dlp), or paste your own. Best effort,
-   and toggleable in Settings (or BEETDROP_LYRICS).
+   and toggleable in Settings (or BEETDROP_LYRICS). A "Fetch lyrics for
+   existing library" button (CLI: `scan-lyrics`) backfills sidecars for
+   tracks already in the library that have none yet, using the same
+   source - it runs as a cancellable job in the queue. Artist and title
+   come from the tags, falling back to the folder/file names
+   ({Artist}/{Album}/{NN} - {Title} or "Artist - Title"); duration always
+   comes from the decoded audio, so even untagged files can be matched.
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the
@@ -58,6 +64,32 @@ numbering preserves gaps. An album that finished with gaps shows a
 "Retry failed tracks" button that re-downloads only the failures and
 slots them into the album folder.
 
+## Music videos
+
+A third search mode, Videos (UI tab, `--videos` on the CLI, `type=videos`
+on the API), grabs music videos instead of audio. Each is downloaded as an
+mp4 (video+audio merged, capped at 1080p by default - configurable up to
+4K or uncapped), best-effort matched against MusicBrainz for a clean
+artist/title/album, and filed Kodi-style:
+
+```
+{video library}/{Artist}/{Artist} - {Title}.mp4
+                        /{Artist} - {Title}.nfo        <- Kodi <musicvideo>
+                        /{Artist} - {Title}-poster.jpg
+```
+
+The `.nfo` and poster are the exact names Kodi's Music Videos scraper
+reads, so a scan needs no network lookup. Unlike an audio grab, a video
+that does not match MusicBrainz is still filed (the video is the point);
+the match only enriches its metadata.
+
+Videos are filed to a **separate** library from your audio, because Kodi
+treats Music and Music Videos as two library types with their own sources
+and scrapers - mixing them in one folder is discouraged. By default the
+video library is a `Music Videos` subfolder of `/music`, so no extra mount
+is needed; set `VIDEO_PATH` (or the Settings field) to put it on its own
+disk. Max quality is set with `BEETDROP_VIDEO_MAX_HEIGHT` or in Settings.
+
 ## Web UI and API
 
 `python -m beetdrop serve` (port 8090) serves a single-page PWA:
@@ -69,12 +101,12 @@ throttled (Cloudflare-tunnel aware), and yt-dlp can be updated live
 from Settings with no restart.
 
 ```
-GET  /api/search?q=&type=songs|albums
+GET  /api/search?q=&type=songs|albums|videos
 POST /api/grab                    {"video_id", "kind", "format", "force"}
 GET  /api/jobs                    POST /api/jobs/{id}/retry|cancel
 GET/PUT /api/settings             GET /api/health   GET /events (SSE)
 POST /api/login                   POST /api/ytdlp/update
-POST /api/lyrics/musixmatch-token
+POST /api/lyrics/musixmatch-token POST /api/lyrics/scan
 ```
 
 ## Running it
@@ -88,15 +120,18 @@ library), set PUID/PGID to the library owner. Environment variables:
 `MUSIC_PATH`, `BEETDROP_CONFIG`, `BEETDROP_FORMAT`, `BEETDROP_BITRATE`,
 `BEETDROP_PASSWORD`, `BEETDROP_COOKIES`, `BEETDROP_CONCURRENCY` (1-4),
 `BEETDROP_LYRICS`, `BEETDROP_LYRICS_PROVIDER` (lrclib|musixmatch),
-`BEETDROP_MXM_TOKEN` (Musixmatch token), `BEETDROP_TRACK_DELAY`,
+`BEETDROP_MXM_TOKEN` (Musixmatch token), `VIDEO_PATH` (music-video
+library; defaults to a subfolder of /music), `BEETDROP_VIDEO_MAX_HEIGHT`
+(video quality cap in px, default 1080, 0 = uncapped), `BEETDROP_TRACK_DELAY`,
 `BEETDROP_MIN_FREE_MB`, `BEETDROP_KEEP_JOBS`, `BEETDROP_KEEP_DAYS`,
 `BEETDROP_SCRATCH`. Legacy `TRACKPULL_*` names are still honored.
 
 CLI:
 
 ```
-python -m beetdrop search "artist song" [--albums]
-python -m beetdrop grab <video_id> [--album] [--format opus|m4a|mp3] [--library PATH]
+python -m beetdrop search "artist song" [--albums | --videos]
+python -m beetdrop grab <video_id> [--album | --video] [--format opus|m4a|mp3] [--library PATH]
+python -m beetdrop scan-lyrics                 # backfill .lrc for the library
 python -m beetdrop serve [--host 0.0.0.0] [--port 8090]
 ```
 
