@@ -813,3 +813,42 @@ class TestArtistPrefixWithoutADash:
         assert backfill.tidy_track_name(
             "Conversation Via Radio (with lyrics)", "Blue October"
         ) == "Conversation Via Radio"
+
+
+class TestScanButtonsPickTheRightPass:
+    """Each button has to reach the pass it names.
+
+    The Upgrade button posted a plain scan: the UI accepted an `upgrade`
+    argument and then never put it in the URL, so pressing it silently
+    ran the fetch-missing pass. The server understood the flag the whole
+    time, which is why nothing here caught it - so pin the markers, and
+    check the page actually sends them.
+    """
+
+    def _config(self, tmp_path):
+        music = tmp_path / "music"
+        music.mkdir()
+        return Config(music_root=music, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    @pytest.mark.parametrize("query,marker", [
+        ("", "__library__"),
+        ("?refresh=true", "__refresh__"),
+        ("?upgrade=true", "__upgrade__"),
+        # Upgrade wins, matching the server's own precedence.
+        ("?refresh=true&upgrade=true", "__upgrade__"),
+    ])
+    def test_marker_matches_the_requested_pass(self, tmp_path, query, marker):
+        config = self._config(tmp_path)
+        with TestClient(create_app(config)) as client:
+            body = client.post("/api/lyrics/scan" + query).json()
+        assert body["video_id"] == marker
+
+    def test_the_page_sends_the_upgrade_flag(self):
+        """Guards the wiring itself: the bug was entirely in the page."""
+        source = (Path(__file__).parent.parent / "beetdrop" / "static"
+                  / "app.js").read_text()
+        scan = source[source.index("async scanLyrics("):]
+        scan = scan[:scan.index("async appleSignIn(")]
+        assert "upgrade=true" in scan, "the Upgrade button posts a plain scan"
+        assert "refresh=true" in scan
