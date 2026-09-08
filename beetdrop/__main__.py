@@ -102,7 +102,30 @@ def cmd_grab(args, config: Config) -> int:
 
 
 def cmd_scan_lyrics(args, config: Config) -> int:
-    from .backfill import backfill_lyrics, lyrics_stats
+    from .backfill import backfill_lyrics, estimate_word_coverage, lyrics_stats
+    if args.estimate is not None:
+        if not config.apple_token:
+            print("error: no Apple media-user-token configured, and Apple is "
+                  "the only source of word timing", file=sys.stderr)
+            return 1
+        est = estimate_word_coverage(config, sample=args.estimate,
+                                     on_detail=lambda text: print(text))
+        if not est.population:
+            print("nothing to upgrade: no line-level tracks found")
+            return 0
+        if not est.sampled:
+            print("\nApple answered for none of the sample "
+                  "(%d deferred) - try again when the rate limit clears"
+                  % est.deferred)
+            return 2
+        print("\nOf %d tracks an upgrade would visit, Apple has word-by-word "
+              "for an estimated %.0f%% (+/- %.0f), about %d tracks." % (
+                  est.population, est.pct, est.margin, est.projected))
+        print("  based on %d answered of %d sampled" % (est.sampled, args.estimate))
+        if est.deferred:
+            print("  %d could not be checked (rate limit or network); the "
+                  "estimate ignores them" % est.deferred)
+        return 0
     if args.list:
         # Uncapped, one path per line, so it can be piped or grepped.
         stats = lyrics_stats(config.music_root, sample=0)
@@ -346,6 +369,12 @@ def main(argv=None) -> int:
                         help="print every track in that bucket, one per line: "
                              "line = has lyrics but no word-by-word, "
                              "broken = word timing that runs backwards mid-line")
+    p_scan.add_argument("--estimate", type=int, nargs="?", const=100,
+                        metavar="N",
+                        help="ask Apple about N random line-level tracks "
+                             "(default 100) and report what share of the "
+                             "library it could serve word-by-word, without "
+                             "writing anything")
     p_scan.add_argument("--stats", action="store_true",
                         help="report lyric coverage and how much is word-by-word, "
                              "without fetching anything")

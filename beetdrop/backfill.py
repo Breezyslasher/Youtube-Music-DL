@@ -57,6 +57,107 @@ def _noop(*args) -> None:
 
 
 @dataclass
+class CoverageEstimate:
+    """How much of the library Apple could serve word-by-word, from a
+    random sample rather than a full pass.
+
+    Checking every line-level track costs two Apple calls each and hours
+    of rate-limited waiting, only to answer "was that worth running?".
+    A sample of a hundred answers it in a couple of minutes, and the
+    margin says how much to trust the number.
+    """
+    population: int = 0    # line-level tracks an upgrade would visit
+    sampled: int = 0       # of those, how many Apple actually answered for
+    word_level: int = 0    # of the answers, how many had word timing
+    deferred: int = 0      # asked but rate-limited or unreachable
+    no_match: int = 0      # Apple had nothing for the track at all
+
+    @property
+    def pct(self) -> float:
+        return 100.0 * self.word_level / self.sampled if self.sampled else 0.0
+
+    @property
+    def margin(self) -> float:
+        """95% confidence half-width in percentage points.
+
+        Includes the finite-population correction: a hundred tracks out
+        of three thousand is a real slice of the whole, so the interval
+        is tighter than the textbook infinite-population one.
+        """
+        if self.sampled < 2:
+            return 100.0
+        share = self.word_level / self.sampled
+        spread = (share * (1 - share) / self.sampled) ** 0.5
+        if self.population > self.sampled:
+            spread *= ((self.population - self.sampled)
+                       / (self.population - 1)) ** 0.5
+        return 100.0 * 1.96 * spread
+
+    @property
+    def projected(self) -> int:
+        """Tracks in the whole population the estimate implies."""
+        return int(round(self.population * self.pct / 100.0))
+
+
+def estimate_word_coverage(config: Config, sample: int = 100,
+                           on_detail: Callable[[str], None] = _noop,
+                           on_progress: Callable[[float], None] = _noop,
+                           seed: Optional[int] = None) -> CoverageEstimate:
+    """Ask Apple about a random sample of the tracks an upgrade would
+    visit, and report what share of them Apple has word timing for.
+
+    Read-only: nothing is written, so this is safe to run against a
+    library at any time, and safe to interrupt.
+    """
+    import random
+
+    from .lyrics import LyricsUnavailable, fetch_synced_lyrics
+
+    files = list(iter_audio_line_level_lyrics(config.music_root))
+    result = CoverageEstimate(population=len(files))
+    if not files:
+        return result
+    chosen = (files if sample <= 0 or sample >= len(files)
+              else random.Random(seed).sample(files, sample))
+    on_detail("asking Apple about %d of %d tracks..." % (len(chosen), len(files)))
+
+    for index, path in enumerate(chosen):
+        artist, title, album, duration = read_track_meta(path) or ("", "", "", None)
+        if not artist or not title:
+            p_artist, p_title, p_album = meta_from_path(path, config.music_root)
+            artist, title, album = artist or p_artist, title or p_title, album or p_album
+        title = tidy_track_name(title, artist)
+        if not (artist and title):
+            result.no_match += 1
+        else:
+            try:
+                lrc = fetch_synced_lyrics(
+                    artist, title, album, duration,
+                    musixmatch_token=config.musixmatch_token,
+                    provider=config.lyrics_provider,
+                    apple_token=config.apple_token,
+                    apple_storefront=config.apple_storefront,
+                    word_by_word=True, word_only=True)
+            except LyricsUnavailable:
+                result.deferred += 1
+                lrc = None
+            except Exception:
+                lrc = None
+            else:
+                result.sampled += 1
+                if lrc and has_word_timing(lrc):
+                    result.word_level += 1
+                else:
+                    result.no_match += 1
+        if REQUEST_SPACING:
+            time.sleep(REQUEST_SPACING)
+        on_progress((index + 1) / len(chosen) * 100.0)
+        on_detail("%d/%d checked, %d have word-by-word available"
+                  % (index + 1, len(chosen), result.word_level))
+    return result
+
+
+@dataclass
 class BackfillResult:
     total: int      # audio files found without a .lrc sidecar
     added: int      # sidecars written

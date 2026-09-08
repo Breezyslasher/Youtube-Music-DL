@@ -852,3 +852,94 @@ class TestScanButtonsPickTheRightPass:
         scan = scan[:scan.index("async appleSignIn(")]
         assert "upgrade=true" in scan, "the Upgrade button posts a plain scan"
         assert "refresh=true" in scan
+
+
+class TestWordCoverageEstimate:
+    """Answering "is an upgrade pass worth running?" by running it costs
+    two Apple calls per track and hours of rate-limited waiting. A random
+    sample answers it in minutes, so long as the margin is honest."""
+
+    def _library(self, tmp_path, count):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        for i in range(count):
+            track = config.music_root / "A" / ("t%03d.opus" % i)
+            track.write_bytes(b"x")
+            track.with_suffix(".lrc").write_text("[00:01.00]plain")
+        return config
+
+    def test_samples_rather_than_checking_everything(self, tmp_path, monkeypatch):
+        config = self._library(tmp_path, 200)
+        asked = []
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", p.stem, "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def fake(*a, **k):
+            asked.append(1)
+            return "[00:01.00]<00:01.00>hi"
+        monkeypatch.setattr("beetdrop.lyrics.fetch_synced_lyrics", fake)
+
+        est = backfill.estimate_word_coverage(config, sample=20, seed=1)
+        assert len(asked) == 20            # not all 200
+        assert est.population == 200
+        assert est.pct == 100.0
+        assert est.projected == 200        # scaled back up to the population
+
+    def test_half_and_half_lands_near_fifty(self, tmp_path, monkeypatch):
+        config = self._library(tmp_path, 200)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", p.stem, "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        seen = {"n": 0}
+
+        def fake(*a, **k):
+            seen["n"] += 1
+            return "[00:01.00]<00:01.00>hi" if seen["n"] % 2 else "[00:01.00]plain"
+        monkeypatch.setattr("beetdrop.lyrics.fetch_synced_lyrics", fake)
+
+        est = backfill.estimate_word_coverage(config, sample=100, seed=7)
+        assert 45 <= est.pct <= 55
+        assert 0 < est.margin < 15          # a real interval, not a guess
+
+    def test_rate_limited_tracks_are_excluded_not_counted_as_no(
+            self, tmp_path, monkeypatch):
+        """Counting a deferred track as "Apple has nothing" would drag the
+        estimate down precisely when Apple is refusing to answer."""
+        from beetdrop.lyrics import LyricsUnavailable
+        config = self._library(tmp_path, 50)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", p.stem, "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        calls = {"n": 0}
+
+        def fake(*a, **k):
+            calls["n"] += 1
+            if calls["n"] % 2:
+                raise LyricsUnavailable("Apple 429")
+            return "[00:01.00]<00:01.00>hi"
+        monkeypatch.setattr("beetdrop.lyrics.fetch_synced_lyrics", fake)
+
+        est = backfill.estimate_word_coverage(config, sample=20, seed=3)
+        assert est.deferred == 10
+        assert est.sampled == 10
+        assert est.pct == 100.0        # of what was actually answered
+
+    def test_an_empty_library_is_not_an_error(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        config.music_root.mkdir(parents=True)
+        est = backfill.estimate_word_coverage(config)
+        assert est.population == 0 and est.pct == 0.0
+
+    def test_nothing_is_written(self, tmp_path, monkeypatch):
+        config = self._library(tmp_path, 10)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", p.stem, "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr("beetdrop.lyrics.fetch_synced_lyrics",
+                            lambda *a, **k: "[00:01.00]<00:01.00>hi")
+        backfill.estimate_word_coverage(config, sample=10, seed=1)
+        for lrc in (config.music_root / "A").glob("*.lrc"):
+            assert lrc.read_text() == "[00:01.00]plain"   # untouched
