@@ -37,7 +37,8 @@ JOB_COLUMNS = (
 # read-only by the settings endpoint and lives nowhere.
 SETTING_KEYS = ("output_format", "bitrate", "password", "concurrency",
                 "music_root", "lyrics", "mxm_token", "lyrics_provider",
-                "video_root", "video_max_height")
+                "video_root", "video_max_height",
+                "apple_token", "apple_storefront", "word_lyrics")
 
 
 class Store:

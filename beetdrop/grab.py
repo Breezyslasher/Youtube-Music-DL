@@ -79,7 +79,10 @@ def _maybe_write_lyrics(config: Config, final_path: Path, tags: FullTags,
         lrc = fetch_synced_lyrics(
             tags.artist, tags.title, tags.album, duration_seconds,
             musixmatch_token=config.musixmatch_token,
-            provider=config.lyrics_provider)
+            provider=config.lyrics_provider,
+            apple_token=config.apple_token,
+            apple_storefront=config.apple_storefront,
+            word_by_word=config.word_lyrics)
         if lrc:
             write_lyrics_sidecar(final_path, lrc)
     except Exception:

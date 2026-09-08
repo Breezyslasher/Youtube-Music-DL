@@ -17,7 +17,7 @@ from typing import Optional
 
 import requests
 
-from . import musixmatch
+from . import apple, musixmatch
 from .matching import base_title, normalize_artist
 from .mb import USER_AGENT
 
@@ -204,24 +204,50 @@ def _musixmatch(artist, title, album, duration_seconds, token):
         return None
 
 
+def _apple(artist, title, duration_seconds, token, storefront, word_by_word):
+    if not token:
+        return None
+    try:
+        return apple.fetch_synced(token, artist, title, duration_seconds,
+                                  storefront=storefront or "us",
+                                  word_by_word=word_by_word)
+    except Exception:
+        return None
+
+
+PROVIDERS = ("lrclib", "musixmatch", "apple")
+
+
 def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                         duration_seconds: Optional[int] = None,
                         musixmatch_token: str = "",
-                        provider: str = "lrclib") -> Optional[str]:
+                        provider: str = "lrclib",
+                        apple_token: str = "",
+                        apple_storefront: str = "us",
+                        word_by_word: bool = False) -> Optional[str]:
     """The LRC text for this track, or None when no *synced* lyrics exist.
 
-    `provider` picks which source is tried first ("lrclib" or
-    "musixmatch"); the other is the fallback. Musixmatch is only
-    attempted when a token is configured. Duration is passed whenever
-    known so both sources return the correctly-timed version.
+    `provider` picks which source is tried first; the others follow as
+    fallbacks. Musixmatch and Apple are only attempted when their token is
+    configured, so an unconfigured source costs nothing. Duration is
+    passed whenever known so every source returns the right recording.
+
+    Apple is the only source that can supply per-word timing; with
+    word_by_word it emits Enhanced (A2) LRC when Apple has it.
     """
     if not artist or not title:
         return None
-    lrclib = lambda: _lrclib(artist, title, album, duration_seconds)
-    mxm = lambda: _musixmatch(artist, title, album, duration_seconds, musixmatch_token)
-    order = [mxm, lrclib] if provider == "musixmatch" else [lrclib, mxm]
-    for source in order:
-        lrc = source()
+    sources = {
+        "lrclib": lambda: _lrclib(artist, title, album, duration_seconds),
+        "musixmatch": lambda: _musixmatch(artist, title, album,
+                                          duration_seconds, musixmatch_token),
+        "apple": lambda: _apple(artist, title, duration_seconds, apple_token,
+                                apple_storefront, word_by_word),
+    }
+    primary = provider if provider in sources else "lrclib"
+    order = [primary] + [name for name in PROVIDERS if name != primary]
+    for name in order:
+        lrc = sources[name]()
         # Never accept generated placeholder text, whatever returned it.
         if lrc and not looks_synthetic(lrc):
             return lrc

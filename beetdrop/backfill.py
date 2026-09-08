@@ -187,7 +187,10 @@ def backfill_lyrics(
                 lrc = fetch_synced_lyrics(
                     artist, title, album, duration,
                     musixmatch_token=config.musixmatch_token,
-                    provider=config.lyrics_provider)
+                    provider=config.lyrics_provider,
+                    apple_token=config.apple_token,
+                    apple_storefront=config.apple_storefront,
+                    word_by_word=config.word_lyrics)
             except Exception:
                 lrc = None
             if lrc:

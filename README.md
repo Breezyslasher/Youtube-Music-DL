@@ -30,13 +30,26 @@ Standalone: no beets, no external tagger, one container.
    overwriting - collisions get a " (2)" suffix.
 6. Fetches synced (timed) lyrics and writes a .lrc sidecar next to the
    track - the format Plex, Navidrome, and most players read for synced
-   lyrics. Two sources: LRCLIB and Musixmatch. Settings picks the primary
-   provider (the other is the fallback); whichever returns timed lyrics
-   first wins. Timed only: results with only plain text are skipped.
-   Musixmatch needs a session token - fetch the latest one with a button
-   in Settings (same as updating yt-dlp), or paste your own. Best effort,
-   and toggleable in Settings (or BEETDROP_LYRICS). A "Fetch lyrics for
-   existing library" button (CLI: `scan-lyrics`) backfills sidecars for
+   lyrics. Three sources: LRCLIB, Musixmatch, and Apple Music. Settings
+   picks the primary provider and the others follow as fallbacks;
+   whichever returns timed lyrics first wins. Timed only: results with
+   only plain text are skipped. Musixmatch needs a session token - fetch
+   the latest one with a button in Settings (same as updating yt-dlp), or
+   paste your own. Apple Music has the best coverage by a distance,
+   including older catalogue the other two miss entirely, and is the only
+   source with per-word timing; it needs the media-user-token of an
+   account with an active subscription. Either paste one, or sign in to
+   Apple from Settings and Beetdrop mints it for you (SRP + 2FA). The
+   Apple ID password is used only for the sign-in exchange - never
+   stored, never logged, and never sent to Apple, since SRP proves you
+   know it without transmitting it; only the session cookies persist
+   (0600, in /config) so the token can be renewed later. Apple stays
+   inert until a token is set. Per-word output (Enhanced/A2 LRC) is off by default
+   because Plex, Navidrome, Jellyfin and Kodi are line-level and would
+   show the inline tags as text - enable it with BEETDROP_WORD_LYRICS or
+   in Settings if your player understands A2. Best effort, and toggleable
+   in Settings (or BEETDROP_LYRICS). A "Fetch
+   lyrics for existing library" button (CLI: `scan-lyrics`) backfills sidecars for
    tracks already in the library that have none yet, using the same
    source - it runs as a cancellable job in the queue. Artist and title
    come from the tags, falling back to the folder/file names
@@ -125,8 +138,10 @@ See docker-compose.yml: mount /config (state) and /music (your
 library), set PUID/PGID to the library owner. Environment variables:
 `MUSIC_PATH`, `BEETDROP_CONFIG`, `BEETDROP_FORMAT`, `BEETDROP_BITRATE`,
 `BEETDROP_PASSWORD`, `BEETDROP_COOKIES`, `BEETDROP_CONCURRENCY` (1-4),
-`BEETDROP_LYRICS`, `BEETDROP_LYRICS_PROVIDER` (lrclib|musixmatch),
-`BEETDROP_MXM_TOKEN` (Musixmatch token), `VIDEO_PATH` (music-video
+`BEETDROP_LYRICS`, `BEETDROP_LYRICS_PROVIDER` (lrclib|musixmatch|apple),
+`BEETDROP_MXM_TOKEN` (Musixmatch token), `BEETDROP_APPLE_TOKEN`
+(Apple Music media-user-token), `BEETDROP_APPLE_STOREFRONT` (default us),
+`BEETDROP_WORD_LYRICS` (per-word timing, default off), `VIDEO_PATH` (music-video
 library; defaults to a subfolder of /music), `BEETDROP_VIDEO_MAX_HEIGHT`
 (video quality cap in px, default 1080, 0 = uncapped), `BEETDROP_TRACK_DELAY`,
 `BEETDROP_MIN_FREE_MB`, `BEETDROP_KEEP_JOBS`, `BEETDROP_KEEP_DAYS`,

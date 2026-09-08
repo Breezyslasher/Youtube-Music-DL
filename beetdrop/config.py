@@ -72,6 +72,15 @@ class Config:
     # is not primary is used as the fallback.
     lyrics_provider: str = field(default_factory=lambda: _env("LYRICS_PROVIDER", "lrclib"))
     musixmatch_token: str = field(default_factory=lambda: _env("MXM_TOKEN", ""))
+    # Apple Music lyrics. Subscriber-gated licensed content, so this is
+    # inert unless the user supplies their own media-user-token. Best
+    # coverage of the three by a distance, especially for older catalogue.
+    apple_token: str = field(default_factory=lambda: _env("APPLE_TOKEN", ""))
+    apple_storefront: str = field(default_factory=lambda: _env("APPLE_STOREFRONT", "us"))
+    # Write Enhanced (A2) LRC with per-word timing when the source has it.
+    # Off by default: players that do not understand the inline <mm:ss.xx>
+    # tags render them as visible text.
+    word_lyrics: bool = field(default_factory=lambda: _env("WORD_LYRICS", "0") in ("1", "true", "yes"))
 
     def __post_init__(self):
         # A blank video_root lives beside the music library so a single
