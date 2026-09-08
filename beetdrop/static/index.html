@@ -307,6 +307,22 @@
           {{ lyricsStats.placeholder }} still look like placeholder junk.
         </template>
       </p>
+      <details v-if="lyricsStats && lyricsStats.line_level_files.length" class="joblog">
+        <summary>{{ lyricsStats.line_level }} without word-by-word</summary>
+        <pre>{{ lyricsStats.line_level_files.join('\n') }}</pre>
+        <p class="note" v-if="lyricsStats.line_level > lyricsStats.line_level_files.length">
+          Showing the first {{ lyricsStats.line_level_files.length }}. For the
+          full list: <code>scan-lyrics --list line</code>
+        </p>
+      </details>
+      <details v-if="lyricsStats && lyricsStats.missing_files.length" class="joblog">
+        <summary>{{ lyricsStats.missing }} with no lyrics at all</summary>
+        <pre>{{ lyricsStats.missing_files.join('\n') }}</pre>
+      </details>
+      <details v-if="lyricsStats && lyricsStats.placeholder_files.length" class="joblog">
+        <summary>{{ lyricsStats.placeholder }} placeholder junk</summary>
+        <pre>{{ lyricsStats.placeholder_files.join('\n') }}</pre>
+      </details>
       <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
       </button>

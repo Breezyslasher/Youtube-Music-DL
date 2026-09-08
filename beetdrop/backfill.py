@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -64,6 +64,11 @@ class LyricsStats:
     line_level: int = 0
     missing: int = 0
     placeholder: int = 0   # generated junk still sitting in the library
+    # Which tracks fall in each bucket, as paths relative to the library.
+    # Capped by the caller so a big library cannot flood a response.
+    line_level_files: list = field(default_factory=list)
+    missing_files: list = field(default_factory=list)
+    placeholder_files: list = field(default_factory=list)
 
     @property
     def coverage_pct(self) -> float:
@@ -74,16 +79,30 @@ class LyricsStats:
         return 100.0 * self.word_level / self.with_lyrics if self.with_lyrics else 0.0
 
 
-def lyrics_stats(root: Path) -> LyricsStats:
+def lyrics_stats(root: Path, sample: int = 50) -> LyricsStats:
     """Count how much of the library has lyrics, and how much of that is
-    word-by-word. Reads only; nothing is written or fetched."""
+    word-by-word, naming the tracks in each bucket.
+
+    sample caps how many names are collected per bucket; 0 collects every
+    one, which is what the CLI uses so the output can be piped. Reads
+    only; nothing is written or fetched.
+    """
     stats = LyricsStats()
+
+    def note(bucket: list, path: Path) -> None:
+        if sample == 0 or len(bucket) < sample:
+            try:
+                bucket.append(str(path.relative_to(root)))
+            except ValueError:
+                bucket.append(str(path))
+
     for path in sorted(root.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
             continue
         stats.audio_files += 1
         sidecar = path.with_suffix(".lrc")
         if not sidecar.is_file():
+            note(stats.missing_files, path)
             continue
         stats.with_lyrics += 1
         try:
@@ -94,8 +113,10 @@ def lyrics_stats(root: Path) -> LyricsStats:
             stats.word_level += 1
         else:
             stats.line_level += 1
+            note(stats.line_level_files, path)
         if looks_synthetic(text):
             stats.placeholder += 1
+            note(stats.placeholder_files, path)
     stats.missing = stats.audio_files - stats.with_lyrics
     return stats
 
