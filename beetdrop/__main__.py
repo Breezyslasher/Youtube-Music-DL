@@ -383,10 +383,20 @@ def cmd_apple_explore(args, config: Config) -> int:
         return 1
     headers = apple._headers(developer, config.apple_token)
 
-    def call(label: str, url: str, params=None) -> dict:
+    anonymous = dict(headers)
+    anonymous.pop("Media-User-Token", None)
+
+    def call(label: str, url: str, params=None, signed_in: bool = False) -> dict:
+        """signed_in only where the account is genuinely needed - lyrics.
+
+        Catalog metadata answers without one, and Apple's rate limit is on
+        the account: sending the token needlessly is what made this probe
+        report 429 while the code path it exists to test was working fine.
+        """
         try:
-            response = requests.get(url, headers=headers, params=params,
-                                    timeout=apple.TIMEOUT)
+            response = requests.get(url,
+                                    headers=headers if signed_in else anonymous,
+                                    params=params, timeout=apple.TIMEOUT)
         except Exception as exc:
             print("  %-46s request failed: %s" % (label, exc))
             return {}
@@ -461,7 +471,7 @@ def cmd_apple_explore(args, config: Config) -> int:
     print("\n== can lyrics come back in that same request? ==")
     for rel in ("lyrics", "syllable-lyrics"):
         data = call("GET /songs?ids=...&include=%s" % rel, songs,
-                    {"ids": ",".join(ids), "include": rel})
+                    {"ids": ",".join(ids), "include": rel}, signed_in=True)
         rows = data.get("data") or []
         carried = sum(1 for row in rows
                       if ((row.get("relationships") or {}).get(rel, {})
@@ -480,7 +490,7 @@ def cmd_apple_explore(args, config: Config) -> int:
             data = call("GET /search&%s=%s" % (parameter, rel),
                         apple.SEARCH_URL % storefront,
                         {"term": query, "types": "songs", "limit": "1",
-                         parameter: rel})
+                         parameter: rel}, signed_in=True)
             rows = (((data or {}).get("results") or {}).get("songs")
                     or {}).get("data") or []
             carried = sum(1 for row in rows
