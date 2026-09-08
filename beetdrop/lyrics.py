@@ -246,13 +246,14 @@ def _musixmatch(artist, title, album, duration_seconds, token):
         return None
 
 
-def _apple(artist, title, duration_seconds, token, storefront, word_by_word):
+def _apple(artist, title, duration_seconds, token, storefront, word_by_word,
+           wait=True):
     if not token:
         return None
     try:
         return apple.fetch_synced(token, artist, title, duration_seconds,
                                   storefront=storefront or "us",
-                                  word_by_word=word_by_word)
+                                  word_by_word=word_by_word, wait=wait)
     except apple.AppleUnavailable as exc:
         raise LyricsUnavailable(str(exc)) from exc
     except Exception:
@@ -309,9 +310,11 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                     memo[name] = _musixmatch(artist, title, album,
                                              duration_seconds, musixmatch_token)
                 else:
+                    # Only wait out an Apple rate limit when nothing else
+                    # could answer; otherwise skip it and let the others try.
                     memo[name] = _apple(artist, title, duration_seconds,
                                         apple_token, apple_storefront,
-                                        word_by_word)
+                                        word_by_word, wait=word_only)
             except LyricsUnavailable as exc:
                 # Keep asking the rest: another source may still have it,
                 # and a hit is a better outcome than a deferral.

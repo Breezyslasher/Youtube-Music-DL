@@ -800,3 +800,75 @@ class TestWaitsMatchApplesRealResponse:
         monkeypatch.setattr(apple.time, "sleep", lambda s: None)
         apple.hold_off(apple.THROTTLE_MAX_HOLD)
         apple._await_throttle()   # returns rather than hanging
+
+
+class TestSkipAppleWhileRateLimited:
+    """A rate-limit hold must not stall sources that could answer now.
+
+    The fetch-missing pass asks LRCLIB, Musixmatch and Apple. Waiting out
+    Apple's minute on every track made the whole scan run at the length
+    of that hold even for tracks LRCLIB had all along. The upgrade pass
+    still waits, because there Apple is the only possible source and
+    skipping would report a false miss."""
+
+    def setup_method(self):
+        apple._throttle_until = 0.0
+
+    def teardown_method(self):
+        apple._throttle_until = 0.0
+
+    def test_skipped_without_waiting_when_others_can_answer(self, monkeypatch):
+        monkeypatch.setattr(apple.time, "sleep",
+                            lambda s: pytest.fail("waited out the hold"))
+        apple.hold_off(60.0)
+        with pytest.raises(apple.AppleUnavailable):
+            apple.fetch_synced("mut", "A", "S", wait=False)
+
+    def test_the_upgrade_pass_still_waits(self, monkeypatch):
+        slept = []
+        now = [1000.0]
+        monkeypatch.setattr(apple.time, "time", lambda: now[0])
+
+        def fake_sleep(seconds):
+            slept.append(seconds)
+            now[0] += seconds
+        monkeypatch.setattr(apple.time, "sleep", fake_sleep)
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False: "dev")
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: FakeResp(ok=False, status=404))
+        apple.hold_off(60.0)
+        apple.fetch_synced("mut", "A", "S", wait=True)
+        assert sum(slept) >= 60
+
+    def test_no_hold_means_no_difference(self, monkeypatch):
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False: "dev")
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: FakeResp(ok=False, status=404))
+        assert apple.fetch_synced("mut", "A", "S", wait=False) is None
+
+
+class TestChainSkipsAppleButKeepsGoing:
+    def setup_method(self):
+        apple._throttle_until = 0.0
+
+    def teardown_method(self):
+        apple._throttle_until = 0.0
+
+    def test_lrclib_still_answers_while_apple_is_limited(self, monkeypatch):
+        monkeypatch.setattr(lyrics_module, "_lrclib",
+                            lambda *a, **k: "[00:01.00]found")
+        monkeypatch.setattr(apple.time, "sleep",
+                            lambda s: pytest.fail("waited out the hold"))
+        apple.hold_off(60.0)
+        assert lyrics_module.fetch_synced_lyrics(
+            "A", "S", apple_token="t") == "[00:01.00]found"
+
+    def test_nothing_else_answering_defers_rather_than_missing(self, monkeypatch):
+        monkeypatch.setattr(lyrics_module, "_lrclib", lambda *a, **k: None)
+        monkeypatch.setattr(lyrics_module, "_musixmatch", lambda *a, **k: None)
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        apple.hold_off(60.0)
+        with pytest.raises(lyrics_module.LyricsUnavailable):
+            lyrics_module.fetch_synced_lyrics("A", "S", apple_token="t")
