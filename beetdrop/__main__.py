@@ -319,6 +319,19 @@ def cmd_apple_raw(args, config: Config) -> int:
                           params={"term": "Billie Eilish lovely",
                                   "types": "songs", "limit": "1"},
                           timeout=apple.TIMEOUT))
+        # 3. The same search with the developer token only. Catalog search
+        #    is public data, so this needs no account - and that is the
+        #    point: if it succeeds while the call above is refused, the
+        #    limit is attached to the media-user-token or its account, and
+        #    signing in again may clear it. If both are refused, it is the
+        #    address being limited and only time will.
+        anonymous = dict(apple._headers(developer, ""))
+        anonymous.pop("Media-User-Token", None)
+        show("GET catalog search WITHOUT the media-user-token",
+             requests.get(apple.SEARCH_URL % storefront, headers=anonymous,
+                          params={"term": "Billie Eilish lovely",
+                                  "types": "songs", "limit": "1"},
+                          timeout=apple.TIMEOUT))
     except Exception as exc:
         print("\ncatalog request failed: %s: %s" % (type(exc).__name__, exc))
         return 1
