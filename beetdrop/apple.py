@@ -181,6 +181,12 @@ def hold_off(seconds: float) -> None:
                               time.time() + min(seconds, THROTTLE_MAX_HOLD))
 
 
+def throttled_for() -> float:
+    """Seconds left on the shared rate-limit hold, 0 when clear."""
+    with _throttle_lock:
+        return max(0.0, _throttle_until - time.time())
+
+
 def _await_throttle() -> None:
     """Block until the shared deadline has actually passed.
 
@@ -540,12 +546,27 @@ def check_token(media_user_token: str, storefront: str = "us") -> dict:
 def fetch_synced(media_user_token: str, artist: str, title: str,
                  duration_seconds: Optional[int] = None,
                  storefront: str = "us",
-                 word_by_word: bool = False) -> Optional[str]:
+                 word_by_word: bool = False,
+                 wait: bool = True) -> Optional[str]:
     """The LRC for this track from Apple Music, or None when Apple has
     none for it. Raises AppleUnavailable when Apple could not be asked -
-    a miss is a normal outcome, an unreachable service is not."""
+    a miss is a normal outcome, an unreachable service is not.
+
+    wait=False gives up immediately while a rate-limit hold is in force
+    instead of sitting out the minute. Worth it when another source can
+    still answer: blocking there made a whole scan crawl at the length of
+    Apple's hold even for tracks LRCLIB had all along. The upgrade pass
+    passes wait=True, because for word timing Apple is the only source
+    and skipping it would just report a false miss.
+    """
     if not media_user_token or not artist or not title:
         return None
+    if not wait:
+        pause = throttled_for()
+        if pause > 0:
+            raise AppleUnavailable(
+                "rate limited for another %ds; skipped so a source that can "
+                "answer is not held up" % int(pause))
     try:
         developer_token = fetch_developer_token()
     except AppleError as exc:
