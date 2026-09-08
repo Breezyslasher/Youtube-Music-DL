@@ -403,3 +403,63 @@ class TestLyricsProbe:
         rc, out = self._run(capsys, config)
         assert "duration tolerance" in out
         assert "+60.0s vs your file" in out
+
+
+BG_TTML = (
+    '<tt xmlns="http://www.w3.org/ns/ttml" '
+    'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+    'xmlns:ttm="http://www.w3.org/ns/ttml#metadata" itunes:timing="Word">'
+    '<body><div><p begin="160.85" end="165.00">'
+    '<span begin="160.85" end="161.25">It\'s</span> '
+    '<span begin="161.25" end="161.80">so</span> '
+    '<span begin="161.80" end="162.40">cold</span>'
+    '<span ttm:role="x-bg">'
+    '<span begin="162.50" end="163.00">(Out</span> '
+    '<span begin="163.00" end="164.00">he-e-ere)</span>'
+    '</span></p></div></body></tt>')
+
+
+class TestBackgroundVocals:
+    """Apple nests background vocals in their own span group. Emitting
+    them inline made the clock run backwards mid-line, which a
+    word-highlighting player renders as a jump."""
+
+    def test_background_group_becomes_its_own_line(self):
+        lrc = apple.ttml_to_lrc(BG_TTML, word_by_word=True)
+        assert lrc.splitlines() == [
+            "[02:40.85]<02:40.85>It's <02:41.25>so <02:41.80>cold",
+            "[02:42.50]<02:42.50>(Out <02:43.00>he-e-ere)",
+        ]
+
+    def test_no_line_runs_backwards(self):
+        lrc = apple.ttml_to_lrc(BG_TTML, word_by_word=True)
+        assert not lyrics_module.has_backwards_word_timing(lrc)
+
+    def test_line_level_still_keeps_the_background_text(self):
+        assert "he-e-ere" in apple.ttml_to_lrc(BG_TTML)
+
+    def test_a_word_without_a_begin_inherits_the_running_time(self):
+        ttml = (
+            '<tt xmlns="http://www.w3.org/ns/ttml" '
+            'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+            'itunes:timing="Word"><body><div><p begin="10.0">'
+            '<span begin="10.0">one</span> <span>two</span> '
+            '<span begin="9.0">three</span></p></div></body></tt>')
+        lrc = apple.ttml_to_lrc(ttml, word_by_word=True)
+        # "two" has no time and "three" claims an earlier one; neither may
+        # rewind the line.
+        assert lrc == "[00:10.00]<00:10.00>one <00:10.00>two <00:10.00>three"
+        assert not lyrics_module.has_backwards_word_timing(lrc)
+
+
+class TestBackwardsDetection:
+    def test_flags_the_broken_shape(self):
+        broken = ("[02:40.85]<02:40.85>It's <02:41.25>so <02:41.80>cold "
+                  "<02:40.85>(Out he-e-ere)")
+        assert lyrics_module.has_backwards_word_timing(broken)
+
+    def test_ignores_sound_files(self):
+        assert not lyrics_module.has_backwards_word_timing(
+            "[02:40.85]<02:40.85>It <02:41.25>is <02:41.80>cold")
+        assert not lyrics_module.has_backwards_word_timing("[00:01.00]plain")
+        assert not lyrics_module.has_backwards_word_timing("")

@@ -81,6 +81,24 @@ def has_word_timing(lrc: str) -> bool:
     return re.search(r"<\d{1,2}:\d{2}[.:]\d{1,3}>", lrc or "") is not None
 
 
+_WORD_TAG = re.compile(r"<(\d{1,2}):(\d{2}[.:]\d{1,3})>")
+
+
+def has_backwards_word_timing(lrc: str) -> bool:
+    """True when some line's word tags run backwards.
+
+    A renderer highlighting word by word would jump back mid-line. Real
+    lyrics never do this; it only comes from a bad conversion, so a file
+    like it is worth fetching again.
+    """
+    for line in (lrc or "").splitlines():
+        times = [int(m[0]) * 60 + float(m[1].replace(":", "."))
+                 for m in _WORD_TAG.findall(line)]
+        if any(later < earlier for earlier, later in zip(times, times[1:])):
+            return True
+    return False
+
+
 def _primary_artist(artist: str) -> str:
     """"Billie Eilish, Khalid" -> "Billie Eilish"; the name a lyrics
     database files the track under."""

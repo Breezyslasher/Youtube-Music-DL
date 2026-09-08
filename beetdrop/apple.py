@@ -40,6 +40,7 @@ _ASSET = re.compile(r'src="(/assets/[^"]+\.js)"')
 
 _TTML_NS = "{http://www.w3.org/ns/ttml}"
 _ITUNES_TIMING = "{http://music.apple.com/lyric-ttml-internal}timing"
+_TTM_ROLE = "{http://www.w3.org/ns/ttml#metadata}role"
 
 # The developer token is public but rotates; cache it rather than scraping
 # the web player for every track.
@@ -185,6 +186,35 @@ def is_word_level(ttml: str) -> bool:
     return (re.search(r'timing="Word"', ttml or "", re.I) is not None)
 
 
+def _leaf_spans(element) -> list:
+    """Every span that actually carries a word, in document order."""
+    found = []
+    for span in element.findall(_TTML_NS + "span"):
+        nested = span.findall(_TTML_NS + "span")
+        found.extend(_leaf_spans(span) if nested else [span])
+    return found
+
+
+def _render_words(spans, default_begin: float) -> str:
+    """Enhanced-LRC word tags, with time forced to run forwards.
+
+    A word missing a begin, or carrying one earlier than the word before
+    it, would make a player rewind mid-line; it inherits the running time
+    instead.
+    """
+    pieces, running = [], default_begin
+    for span in spans:
+        word = "".join(span.itertext()).strip()
+        if not word:
+            continue
+        at = _parse_time(span.get("begin"))
+        if at is None or at < running:
+            at = running
+        running = at
+        pieces.append("<%s>%s" % (_stamp(at), word))
+    return " ".join(pieces)
+
+
 def ttml_to_lrc(ttml: str, word_by_word: bool = False) -> Optional[str]:
     """Apple TTML to LRC.
 
@@ -205,22 +235,38 @@ def ttml_to_lrc(ttml: str, word_by_word: bool = False) -> Optional[str]:
         begin = _parse_time(paragraph.get("begin"))
         if begin is None:
             continue
-        spans = list(paragraph.findall(_TTML_NS + "span"))
-        if want_words and spans:
-            pieces = []
-            for span in spans:
-                word = "".join(span.itertext()).strip()
-                if not word:
-                    continue
-                at = _parse_time(span.get("begin"))
-                stamp = "<%s>" % _stamp(at if at is not None else begin)
-                pieces.append(stamp + word)
-            text = " ".join(pieces)
-        else:
+        if not want_words:
             text = " ".join("".join(paragraph.itertext()).split())
-        if not text.strip():
+            if text.strip():
+                lines.append((begin, "[%s]%s" % (_stamp(begin), text)))
             continue
-        lines.append((begin, "[%s]%s" % (_stamp(begin), text)))
+
+        # Apple nests background vocals in their own span group, whose
+        # words are timed against the same stretch of the song as the main
+        # line. Emitting them inline rewinds the clock mid-line, so each
+        # group becomes its own LRC line at its own start instead.
+        words, groups = [], []
+        for span in paragraph.findall(_TTML_NS + "span"):
+            if span.findall(_TTML_NS + "span"):
+                groups.append(span)
+            else:
+                words.append(span)
+
+        main = _render_words(words, begin) if words else " ".join(
+            "".join(paragraph.itertext()).split())
+        if main.strip():
+            lines.append((begin, "[%s]%s" % (_stamp(begin), main)))
+
+        for group in groups:
+            leaves = _leaf_spans(group)
+            start = _parse_time(group.get("begin"))
+            if start is None and leaves:
+                start = _parse_time(leaves[0].get("begin"))
+            if start is None:
+                start = begin
+            rendered = _render_words(leaves, start)
+            if rendered.strip():
+                lines.append((start, "[%s]%s" % (_stamp(start), rendered)))
 
     if not lines:
         return None

@@ -19,7 +19,12 @@ import mutagen
 from .cleaning import clean_title
 from .config import Config
 from .library import write_lyrics_sidecar
-from .lyrics import fetch_synced_lyrics, has_word_timing, looks_synthetic
+from .lyrics import (
+    fetch_synced_lyrics,
+    has_backwards_word_timing,
+    has_word_timing,
+    looks_synthetic,
+)
 from .matching import normalize_artist
 
 # Leading track (and disc) number on a filename, e.g. "02 - ", "1-02 - ".
@@ -141,11 +146,12 @@ def iter_audio_missing_lyrics(root: Path):
 
 
 def iter_audio_line_level_lyrics(root: Path):
-    """Audio whose .lrc exists but carries no per-word timing.
+    """Audio whose .lrc an upgrade pass could improve.
 
-    These are the tracks a word-by-word upgrade can improve; anything
-    already word-level, or with no sidecar at all, is left to the other
-    passes.
+    Either it carries no per-word timing at all, or its word tags run
+    backwards somewhere - which only a bad conversion produces, and which
+    a re-fetch repairs. A sound word-level file, or no sidecar at all, is
+    left to the other passes.
     """
     for path in sorted(root.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
@@ -157,7 +163,7 @@ def iter_audio_line_level_lyrics(root: Path):
             text = sidecar.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if not has_word_timing(text):
+        if not has_word_timing(text) or has_backwards_word_timing(text):
             yield path
 
 
