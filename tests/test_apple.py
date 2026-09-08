@@ -270,3 +270,69 @@ class TestTokenStaleness:
         with TestClient(create_app(config)) as client:
             body = client.post("/api/lyrics/apple-test").json()
         assert body == {"ok": False, "detail": "expired"}
+
+
+class TestWordByWordPreference:
+    """Apple is the only per-word source, so asking for word timing must
+    not be silently satisfied by a line-level hit from another source."""
+
+    def _sources(self, monkeypatch, lrclib=None, mxm=None, apl=None, calls=None):
+        def track(name, value):
+            def inner(*a, **k):
+                if calls is not None:
+                    calls.append(name)
+                return value
+            return inner
+        monkeypatch.setattr(lyrics_module, "_lrclib",
+                            lambda a, t, al, d: track("lrclib", lrclib)())
+        monkeypatch.setattr(lyrics_module.musixmatch, "fetch_synced",
+                            track("musixmatch", mxm))
+        monkeypatch.setattr(lyrics_module.apple, "fetch_synced",
+                            track("apple", apl))
+
+    def test_word_request_beats_a_line_level_hit_from_lrclib(self, monkeypatch):
+        # The regression: LRCLIB answers first for mainstream tracks, so
+        # Apple was never asked and word timing was silently lost.
+        words = "[00:09.26]<00:09.26>I <00:09.64>drove"
+        self._sources(monkeypatch, lrclib="[00:09.00]I drove", apl=words)
+        assert lyrics_module.fetch_synced_lyrics(
+            "Adele", "Remedy", provider="lrclib", apple_token="t",
+            word_by_word=True) == words
+
+    def test_falls_back_when_apple_has_only_line_timing(self, monkeypatch):
+        self._sources(monkeypatch, lrclib="[00:09.00]lrclib line",
+                      apl="[00:09.00]apple line")
+        # Apple has no word timing for this one, so the configured primary
+        # decides as usual.
+        assert lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="lrclib", apple_token="t",
+            word_by_word=True) == "[00:09.00]lrclib line"
+
+    def test_apple_asked_only_once(self, monkeypatch):
+        calls = []
+        self._sources(monkeypatch, lrclib=None, apl="[00:09.00]apple line",
+                      calls=calls)
+        lyrics_module.fetch_synced_lyrics("A", "S", provider="lrclib",
+                                          apple_token="t", word_by_word=True)
+        assert calls.count("apple") == 1, calls
+
+    def test_line_mode_keeps_the_configured_order(self, monkeypatch):
+        self._sources(monkeypatch, lrclib="[00:09.00]lrclib", apl="[00:09.00]apple")
+        assert lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="lrclib", apple_token="t",
+            word_by_word=False) == "[00:09.00]lrclib"
+
+    def test_no_apple_token_is_unaffected(self, monkeypatch):
+        self._sources(monkeypatch, lrclib="[00:09.00]lrclib")
+        assert lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="lrclib", word_by_word=True) == "[00:09.00]lrclib"
+
+
+class TestHasWordTiming:
+    @pytest.mark.parametrize("lrc,expected", [
+        ("[00:09.26]<00:09.26>I <00:09.64>drove", True),
+        ("[00:09.26]I drove by", False),
+        ("", False),
+    ])
+    def test_detection(self, lrc, expected):
+        assert lyrics_module.has_word_timing(lrc) is expected
