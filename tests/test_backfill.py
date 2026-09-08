@@ -482,3 +482,21 @@ class TestLyricsStats:
         assert body["word_level"] == 1
         assert body["coverage_pct"] == 100.0
         assert body["word_pct"] == 100.0
+
+
+class TestUpgradeRepairsBackwardsTiming:
+    def test_a_backwards_word_file_is_offered_to_the_upgrade(self, tmp_path):
+        root = tmp_path / "music"
+        (root / "A").mkdir(parents=True)
+        broken = root / "A" / "broken.opus"
+        broken.write_bytes(b"x")
+        broken.with_suffix(".lrc").write_text(
+            "[02:40.85]<02:40.85>It's <02:41.25>so <02:41.80>cold "
+            "<02:40.85>(Out he-e-ere)")
+        sound = root / "A" / "sound.opus"
+        sound.write_bytes(b"x")
+        sound.with_suffix(".lrc").write_text(
+            "[02:40.85]<02:40.85>It <02:41.25>is <02:41.80>cold")
+
+        found = [p.name for p in iter_audio_line_level_lyrics(root)]
+        assert found == ["broken.opus"]  # the sound one is left alone
