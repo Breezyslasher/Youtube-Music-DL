@@ -613,11 +613,11 @@ def fetch_synced(media_user_token: str, artist: str, title: str,
     song_id = (song or {}).get("id")
     if not song_id:
         return None
-    # The search already said whether synced lyrics exist, so a track
-    # without them costs one request instead of two - and, more to the
-    # point, spends none of the account's rate limit on a certain miss.
-    if has_synced_lyrics(song) is False:
-        return None
+    # No shortcut here. hasTimeSyncedLyrics looked like a free way to skip
+    # the second request, but measured against a real library it was wrong
+    # 9 times in 17: Apple flags a track as having no synced lyrics on an
+    # anonymous search and then serves them when asked. A saved request is
+    # not worth silently dropping lyrics we would otherwise have.
     ttml = fetch_ttml(developer_token, media_user_token, storefront, song_id)
     if not ttml:
         return None

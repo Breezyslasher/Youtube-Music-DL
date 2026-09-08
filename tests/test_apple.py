@@ -919,7 +919,13 @@ class TestSearchNeedsNoAccount:
                    if "syllable-lyrics" in url)          # lyrics: signed in
 
 
-class TestSkipTracksAppleSaysHaveNoSyncedLyrics:
+class TestNoShortcutOnTheLyricsFlag:
+    """hasTimeSyncedLyrics looked like a free way to skip the second
+    request. Measured against a real library it was wrong 9 times in 17 -
+    Apple flags a track as having no synced lyrics on an anonymous search
+    and then serves them when asked - so the lyrics are always fetched.
+    A saved request is not worth silently dropping lyrics."""
+
     def setup_method(self):
         apple._dev_token["value"] = "devtok"
         apple._dev_token["at"] = 9e18
@@ -935,29 +941,22 @@ class TestSkipTracksAppleSaysHaveNoSyncedLyrics:
                     {"id": "1", "attributes": attributes}]}}})
             return FakeResp({"data": [{"attributes": {"ttml": WORD_TTML}}]})
         monkeypatch.setattr(apple.requests, "get", fake_get)
-        result = apple.fetch_synced("mut", "A", "S", 200)
-        return result, calls
+        return apple.fetch_synced("mut", "A", "S", 200), calls
 
-    def test_no_synced_lyrics_costs_one_request_not_two(self, monkeypatch):
+    def test_lyrics_fetched_even_when_apple_says_there_are_none(self, monkeypatch):
         result, calls = self._run(monkeypatch, {
             "durationInMillis": 200000, "hasLyrics": True,
             "hasTimeSyncedLyrics": False})
-        assert result is None
-        assert not any("syllable-lyrics" in url for url in calls)
+        assert result, "the flag is unreliable; the fetch must still happen"
+        assert any("syllable-lyrics" in url for url in calls)
 
-    def test_no_lyrics_at_all_is_also_skipped(self, monkeypatch):
+    def test_has_lyrics_false_is_not_trusted_either(self, monkeypatch):
         result, calls = self._run(monkeypatch, {
             "durationInMillis": 200000, "hasLyrics": False})
-        assert result is None
-        assert not any("syllable-lyrics" in url for url in calls)
+        assert result
+        assert any("syllable-lyrics" in url for url in calls)
 
-    def test_synced_lyrics_are_still_fetched(self, monkeypatch):
+    def test_a_positive_flag_still_fetches(self, monkeypatch):
         result, calls = self._run(monkeypatch, {
             "durationInMillis": 200000, "hasTimeSyncedLyrics": True})
-        assert result and any("syllable-lyrics" in url for url in calls)
-
-    def test_apple_saying_nothing_is_not_taken_as_no(self, monkeypatch):
-        """Absence of the flag must not silently skip a track that has
-        lyrics; only an explicit false may."""
-        result, calls = self._run(monkeypatch, {"durationInMillis": 200000})
         assert result and any("syllable-lyrics" in url for url in calls)
