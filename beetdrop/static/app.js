@@ -21,6 +21,8 @@ createApp({
       updatingYtdlp: false,
       fetchingToken: false,
       scanningLyrics: false,
+      checkingLyrics: false,
+      lyricsStats: null,
       testingApple: false,
       appleStatus: "",
       appleOk: false,
@@ -333,6 +335,19 @@ createApp({
         if (err.message !== "password required") this.showToast("Token fetch failed: " + err.message);
       } finally {
         this.fetchingToken = false;
+      }
+    },
+
+    async checkLyrics() {
+      this.checkingLyrics = true;
+      try {
+        this.lyricsStats = await this.api("/api/lyrics/stats");
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Check failed: " + err.message);
+        }
+      } finally {
+        this.checkingLyrics = false;
       }
     },
 

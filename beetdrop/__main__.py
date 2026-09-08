@@ -100,7 +100,18 @@ def cmd_grab(args, config: Config) -> int:
 
 
 def cmd_scan_lyrics(args, config: Config) -> int:
-    from .backfill import backfill_lyrics
+    from .backfill import backfill_lyrics, lyrics_stats
+    if args.stats:
+        s = lyrics_stats(config.music_root)
+        print("%d of %d tracks have lyrics (%.1f%%)" % (
+            s.with_lyrics, s.audio_files, s.coverage_pct))
+        print("  word-by-word: %d (%.1f%% of those with lyrics)" % (
+            s.word_level, s.word_pct))
+        print("  line-level:   %d" % s.line_level)
+        print("  no lyrics:    %d" % s.missing)
+        if s.placeholder:
+            print("  placeholder junk still present: %d" % s.placeholder)
+        return 0
     try:
         check_storage(config.music_root, config.min_free_mb)
     except StorageError as exc:
@@ -161,6 +172,9 @@ def main(argv=None) -> int:
                             help="fetch synced lyrics for library tracks missing them")
     p_scan.add_argument("--refresh", action="store_true",
                         help="delete placeholder .lrc files first, then re-fetch them")
+    p_scan.add_argument("--stats", action="store_true",
+                        help="report lyric coverage and how much is word-by-word, "
+                             "without fetching anything")
     p_scan.add_argument("--upgrade", action="store_true",
                         help="re-fetch tracks whose .lrc has no per-word timing "
                              "and replace it when Apple has a word-level version")
