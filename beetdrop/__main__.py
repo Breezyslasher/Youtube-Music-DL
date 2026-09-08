@@ -113,18 +113,37 @@ def cmd_scan_lyrics(args, config: Config) -> int:
         if not est.population:
             print("nothing to upgrade: no line-level tracks found")
             return 0
-        if not est.sampled:
-            print("\nApple answered for none of the sample "
-                  "(%d deferred) - try again when the rate limit clears"
-                  % est.deferred)
+        if not est.checked:
+            print("\nApple answered for none of the sample (%d deferred, "
+                  "%d had no usable tags) - try again when the rate limit "
+                  "clears" % (est.deferred, est.skipped))
             return 2
-        print("\nOf %d tracks an upgrade would visit, Apple has word-by-word "
-              "for an estimated %.0f%% (+/- %.0f), about %d tracks." % (
-                  est.population, est.pct, est.margin, est.projected))
-        print("  based on %d answered of %d sampled" % (est.sampled, args.estimate))
+        print("\nApple recognised %d of the %d tracks asked about (%.0f%%)."
+              % (est.matched, est.checked, est.match_pct))
+        if est.matched:
+            print("Of the ones it recognised, %.0f%% (+/- %.0f) have "
+                  "word-by-word." % (est.pct, est.margin))
+        print("Across all %d tracks an upgrade would visit, that is about "
+              "%d tracks improved." % (est.population, est.projected))
+        if est.not_found:
+            print("\n%d of the sample matched nothing at all. Those are "
+                  "metadata, not Apple: better tags would find some of them."
+                  % est.not_found)
+            for name in est.not_found_files[:10]:
+                print("    no match: %s" % name)
+        if est.skipped:
+            print("  %d had no usable artist/title to search with" % est.skipped)
         if est.deferred:
             print("  %d could not be checked (rate limit or network); the "
                   "estimate ignores them" % est.deferred)
+        if args.show_matches:
+            print("\nwhat Apple matched your tracks to:")
+            for line in est.matched_examples:
+                print("    %s" % line)
+        elif est.matched_examples:
+            print("\nspot-check a few matches (--show-matches for more):")
+            for line in est.matched_examples[:5]:
+                print("    %s" % line)
         return 0
     if args.list:
         # Uncapped, one path per line, so it can be piped or grepped.
@@ -528,6 +547,9 @@ def main(argv=None) -> int:
                              "(default 100) and report what share of the "
                              "library it could serve word-by-word, without "
                              "writing anything")
+    p_scan.add_argument("--show-matches", action="store_true",
+                        help="with --estimate, print what Apple matched each "
+                             "track to, so a wrong match is visible")
     p_scan.add_argument("--stats", action="store_true",
                         help="report lyric coverage and how much is word-by-word, "
                              "without fetching anything")

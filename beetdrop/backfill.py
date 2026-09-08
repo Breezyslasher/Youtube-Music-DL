@@ -58,45 +58,61 @@ def _noop(*args) -> None:
 
 @dataclass
 class CoverageEstimate:
-    """How much of the library Apple could serve word-by-word, from a
-    random sample rather than a full pass.
+    """How much of the library Apple could serve word-by-word.
 
-    Checking every line-level track costs two Apple calls each and hours
-    of rate-limited waiting, only to answer "was that worth running?".
-    A sample of a hundred answers it in a couple of minutes, and the
-    margin says how much to trust the number.
+    Keeps "Apple never found this track" apart from "Apple found it and
+    has no word timing". Lumping them together, as this first did, blames
+    Apple for what is really a failed match - and on a library with rough
+    tags that is most of the gap, so the headline percentage came out far
+    below what Apple could actually supply.
     """
-    population: int = 0    # line-level tracks an upgrade would visit
-    sampled: int = 0       # of those, how many Apple actually answered for
-    word_level: int = 0    # of the answers, how many had word timing
-    deferred: int = 0      # asked but rate-limited or unreachable
-    no_match: int = 0      # Apple had nothing for the track at all
+    population: int = 0     # line-level tracks an upgrade would visit
+    checked: int = 0        # tracks we got as far as asking about
+    matched: int = 0        # of those, ones Apple recognised
+    word_level: int = 0     # of the matches, ones with word timing
+    not_found: int = 0      # Apple recognised nothing - a matching failure
+    no_word: int = 0        # matched, but Apple has no word timing
+    deferred: int = 0       # rate-limited or unreachable
+    skipped: int = 0        # no usable artist/title to search with
+    # Names, capped, so the numbers can be checked by eye.
+    word_files: list = field(default_factory=list)
+    not_found_files: list = field(default_factory=list)
+    matched_examples: list = field(default_factory=list)
 
     @property
     def pct(self) -> float:
-        return 100.0 * self.word_level / self.sampled if self.sampled else 0.0
+        """Share of the tracks Apple recognised. The honest headline: it
+        says what Apple has, not how good our metadata is."""
+        return 100.0 * self.word_level / self.matched if self.matched else 0.0
+
+    @property
+    def pct_of_all(self) -> float:
+        """Share of everything asked about, matching failures included -
+        what an upgrade pass would actually deliver today."""
+        return 100.0 * self.word_level / self.checked if self.checked else 0.0
+
+    @property
+    def match_pct(self) -> float:
+        return 100.0 * self.matched / self.checked if self.checked else 0.0
 
     @property
     def margin(self) -> float:
-        """95% confidence half-width in percentage points.
-
-        Includes the finite-population correction: a hundred tracks out
-        of three thousand is a real slice of the whole, so the interval
-        is tighter than the textbook infinite-population one.
-        """
-        if self.sampled < 2:
+        """95% confidence half-width on pct, in percentage points, with
+        the finite-population correction."""
+        if self.matched < 2:
             return 100.0
-        share = self.word_level / self.sampled
-        spread = (share * (1 - share) / self.sampled) ** 0.5
-        if self.population > self.sampled:
-            spread *= ((self.population - self.sampled)
+        share = self.word_level / self.matched
+        spread = (share * (1 - share) / self.matched) ** 0.5
+        if self.population > self.matched:
+            spread *= ((self.population - self.matched)
                        / (self.population - 1)) ** 0.5
         return 100.0 * 1.96 * spread
 
     @property
     def projected(self) -> int:
-        """Tracks in the whole population the estimate implies."""
-        return int(round(self.population * self.pct / 100.0))
+        """Tracks an upgrade would actually improve, matching failures
+        included - those deliver nothing however good Apple's catalogue is."""
+        return int(round(self.population * self.pct_of_all / 100.0))
 
 
 def estimate_word_coverage(config: Config, sample: int = 100,
@@ -104,14 +120,19 @@ def estimate_word_coverage(config: Config, sample: int = 100,
                            on_progress: Callable[[float], None] = _noop,
                            seed: Optional[int] = None) -> CoverageEstimate:
     """Ask Apple about a random sample of the tracks an upgrade would
-    visit, and report what share of them Apple has word timing for.
+    visit, and report what share of them it has word timing for.
 
-    Read-only: nothing is written, so this is safe to run against a
-    library at any time, and safe to interrupt.
+    Goes straight to Apple rather than through the provider chain: only
+    Apple has word timing, and asking directly is what makes it possible
+    to say whether a track failed because Apple has nothing or because
+    nothing we searched for matched. sample=0 checks every track.
+
+    Read-only, and safe to interrupt.
     """
     import random
 
-    from .lyrics import LyricsUnavailable, fetch_synced_lyrics
+    from . import apple
+    from .lyrics import LyricsUnavailable
 
     files = list(iter_audio_line_level_lyrics(config.music_root))
     result = CoverageEstimate(population=len(files))
@@ -120,40 +141,56 @@ def estimate_word_coverage(config: Config, sample: int = 100,
     chosen = (files if sample <= 0 or sample >= len(files)
               else random.Random(seed).sample(files, sample))
     on_detail("asking Apple about %d of %d tracks..." % (len(chosen), len(files)))
+    storefront = config.apple_storefront or "us"
+
+    def note(bucket: list, text: str) -> None:
+        if len(bucket) < 50:
+            bucket.append(text)
 
     for index, path in enumerate(chosen):
         artist, title, album, duration = read_track_meta(path) or ("", "", "", None)
         if not artist or not title:
             p_artist, p_title, p_album = meta_from_path(path, config.music_root)
-            artist, title, album = artist or p_artist, title or p_title, album or p_album
+            artist, title = artist or p_artist, title or p_title
         title = tidy_track_name(title, artist)
         if not (artist and title):
-            result.no_match += 1
+            result.skipped += 1
         else:
+            result.checked += 1
             try:
-                lrc = fetch_synced_lyrics(
-                    artist, title, album, duration,
-                    musixmatch_token=config.musixmatch_token,
-                    provider=config.lyrics_provider,
-                    apple_token=config.apple_token,
-                    apple_storefront=config.apple_storefront,
-                    word_by_word=True, word_only=True)
-            except LyricsUnavailable:
-                result.deferred += 1
-                lrc = None
-            except Exception:
-                lrc = None
-            else:
-                result.sampled += 1
-                if lrc and has_word_timing(lrc):
-                    result.word_level += 1
+                developer = apple.fetch_developer_token()
+                song = apple.search_song_row(developer, storefront, artist,
+                                             title, duration)
+                if song is None:
+                    result.not_found += 1
+                    note(result.not_found_files, "%s - %s" % (artist, title))
                 else:
-                    result.no_match += 1
+                    result.matched += 1
+                    attributes = song.get("attributes") or {}
+                    note(result.matched_examples, "%s - %s  ->  %s - %s" % (
+                        artist, title, attributes.get("artistName"),
+                        attributes.get("name")))
+                    ttml = None
+                    if apple.has_synced_lyrics(song) is not False:
+                        ttml = apple.fetch_ttml(developer, config.apple_token,
+                                                storefront, song.get("id"))
+                    if ttml and apple.is_word_level(ttml):
+                        result.word_level += 1
+                        note(result.word_files, "%s - %s" % (artist, title))
+                    else:
+                        result.no_word += 1
+            except (apple.AppleUnavailable, LyricsUnavailable) as exc:
+                result.checked -= 1
+                result.deferred += 1
+                if result.deferred <= 3:
+                    on_detail("deferred: %s" % exc)
+            except Exception:
+                result.no_word += 1
         if REQUEST_SPACING:
             time.sleep(REQUEST_SPACING)
         on_progress((index + 1) / len(chosen) * 100.0)
-        on_detail("%d/%d checked, %d have word-by-word available"
-                  % (index + 1, len(chosen), result.word_level))
+        on_detail("%d/%d checked, %d matched, %d with word-by-word" % (
+            index + 1, len(chosen), result.matched, result.word_level))
     return result
 
 
