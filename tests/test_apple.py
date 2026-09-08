@@ -463,3 +463,69 @@ class TestBackwardsDetection:
             "[02:40.85]<02:40.85>It <02:41.25>is <02:41.80>cold")
         assert not lyrics_module.has_backwards_word_timing("[00:01.00]plain")
         assert not lyrics_module.has_backwards_word_timing("")
+
+
+class TestThrottleBackoff:
+    """A scan runs catalog calls back to back with no fixed pause, so 429
+    is a normal outcome and has to be waited out. Returning None instead
+    would read as "this track has no lyrics" everywhere above, quietly
+    marking a throttled run's tracks as misses."""
+
+    def _response(self, status, headers=None):
+        class R:
+            status_code = status
+            ok = status == 200
+            headers = {}
+
+            def json(self):
+                return {"ok": True}
+        r = R()
+        r.headers = headers or {}
+        return r
+
+    def test_retries_after_429_and_succeeds(self, monkeypatch):
+        seen = []
+        slept = []
+        replies = [self._response(429, {"Retry-After": "2"}),
+                   self._response(429),
+                   self._response(200)]
+
+        def fake_get(url, **kw):
+            seen.append(url)
+            return replies[len(seen) - 1]
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        monkeypatch.setattr(apple.time, "sleep", lambda s: slept.append(s))
+
+        data, status = apple._get_json("https://x/y", {})
+        assert (data, status) == ({"ok": True}, 200)
+        assert len(seen) == 3                 # it retried rather than giving up
+        assert slept[0] == 2                  # honoured Retry-After
+        assert slept[1] >= apple.THROTTLE_BACKOFF
+
+    def test_gives_up_after_the_retry_budget(self, monkeypatch):
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda url, **kw: self._response(429))
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        data, status = apple._get_json("https://x/y", {})
+        # Reported as 429, never as an ordinary empty result.
+        assert data is None and status == 429
+
+    def test_waits_are_capped(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda url, **kw: self._response(
+                                429, {"Retry-After": "99999"}))
+        monkeypatch.setattr(apple.time, "sleep", lambda s: slept.append(s))
+        apple._get_json("https://x/y", {})
+        assert all(s <= apple.THROTTLE_MAX_WAIT for s in slept), slept
+
+    def test_a_normal_error_is_not_retried(self, monkeypatch):
+        seen = []
+
+        def fake_get(url, **kw):
+            seen.append(url)
+            return self._response(404)
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        data, status = apple._get_json("https://x/y", {})
+        assert (data, status) == (None, 404)
+        assert len(seen) == 1     # 404 means no lyrics; retrying is pointless
