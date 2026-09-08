@@ -752,3 +752,64 @@ class TestUpgradeRefusesABadReplacement:
                                   self.BACKWARDS, self.BACKWARDS)
         assert result.upgraded == 0          # nothing was actually fixed
         assert track.with_suffix(".lrc").read_text() == self.BACKWARDS
+
+
+class TestTrackNumberPrefix:
+    """Ripped albums name files "06 Title.m4a" with no punctuation after
+    the number. The prefix pattern required a "-" or ".", so those were
+    searched for as "06 Chance To Love You More" - which no catalogue
+    has, making every such track a permanent miss."""
+
+    @pytest.mark.parametrize("stem,expected", [
+        ("06 I'll Give It All", "I'll Give It All"),
+        ("14 Chance To Love You More", "Chance To Love You More"),
+        ("11 Free", "Free"),
+        ("2-04 When There Was Me And You", "When There Was Me And You"),
+        ("1-02 - Song", "Song"),
+        ("02 - Song", "Song"),
+        ("02. Song", "Song"),
+        ("100 Song", "Song"),
+    ])
+    def test_prefix_is_stripped(self, tmp_path, stem, expected):
+        p = tmp_path / "Artist" / "Album" / (stem + ".opus")
+        assert meta_from_path(p, tmp_path)[1] == expected
+
+    @pytest.mark.parametrize("stem", [
+        "1999",             # the whole name is the number
+        "24K Magic",        # digits run into the word
+        "Song 2",           # number is not leading
+    ])
+    def test_a_real_title_is_left_alone(self, tmp_path, stem):
+        p = tmp_path / "Artist" / "Album" / (stem + ".opus")
+        assert meta_from_path(p, tmp_path)[1] == stem
+
+
+class TestArtistPrefixWithoutADash:
+    """Rips are often named "<Artist> <Title>" or "<Artist>-<Title>" with
+    no " - " separator, and the strip only handled the spaced dash - so
+    "Adele I Found A Boy" was searched for under Adele as "Adele I Found
+    A Boy"."""
+
+    @pytest.mark.parametrize("title,artist,expected", [
+        ("Adele I Found A Boy", "Adele", "I Found A Boy"),
+        ("Blue October The Still", "Blue October", "The Still"),
+        ("Blue October-Conversation Via Radio", "Blue October",
+         "Conversation Via Radio"),
+        ("5 Seconds of Summer - Social Casualty", "5 Seconds of Summer",
+         "Social Casualty"),
+    ])
+    def test_prefix_removed(self, title, artist, expected):
+        assert backfill.tidy_track_name(title, artist) == expected
+
+    def test_a_title_that_is_only_the_artist_survives(self):
+        # Bon Jovi's "Bon Jovi": stripping everything would leave nothing
+        # to search for, so the title is kept whole.
+        assert backfill.tidy_track_name("Bon Jovi", "Bon Jovi") == "Bon Jovi"
+
+    def test_an_unrelated_leading_word_is_kept(self):
+        assert backfill.tidy_track_name("Yesterday", "The Beatles") == "Yesterday"
+
+    def test_with_lyrics_suffix_is_noise(self):
+        assert backfill.tidy_track_name(
+            "Conversation Via Radio (with lyrics)", "Blue October"
+        ) == "Conversation Via Radio"

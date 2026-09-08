@@ -28,8 +28,13 @@ from .lyrics import (
 )
 from .matching import normalize_artist
 
-# Leading track (and disc) number on a filename, e.g. "02 - ", "1-02 - ".
-_TRACK_PREFIX = re.compile(r"^(?:\d+-)?\d+\s*[-.]\s*")
+# Leading track (and disc) number on a filename: "02 - ", "1-02 - ", "02. ",
+# and - the common case this missed for a long time - a bare "06 Title" with
+# nothing but a space after the number. Requiring punctuation meant every
+# "NN Title.m4a" in a ripped album was searched for as "06 Chance To Love
+# You More", which no catalogue has. "2-04 Title" was worse: it stripped
+# only the disc part and searched for "04 Title".
+_TRACK_PREFIX = re.compile(r"^(?:\d{1,2}\s*-\s*)?\d{1,3}(?:\s*[-.]\s*|\s+)(?=\S)")
 # Runs of whitespace, which junk tags are full of.
 _WHITESPACE = re.compile(r"\s+")
 # Trailing " (1999)" year on an album folder.
@@ -216,12 +221,22 @@ def tidy_track_name(title: str, artist: str) -> str:
     cleaned = clean_title(title or "")
     if artist:
         # "<artist> - <track>" is the usual shape; compare loosely so
-        # spacing and case differences do not stop the strip.
-        head = re.match(r"^(.*?)\s+-\s+(.+)$", cleaned)
-        if head:
-            left, right = head.group(1), head.group(2)
-            if normalize_artist(left) == normalize_artist(artist):
-                cleaned = right
+        # spacing and case differences do not stop the strip. The dash
+        # needs no spaces around it: "Blue October-Conversation Via Radio"
+        # is how a lot of ripped files are named.
+        head = re.match(r"^(.*?)\s*[-–—:]\s*(.+)$", cleaned)
+        if head and normalize_artist(head.group(1)) == normalize_artist(artist):
+            cleaned = head.group(2)
+        else:
+            # No separator at all - "Adele I Found A Boy", "Blue October
+            # The Still". Peel words off the front while they still spell
+            # the artist, and never take the whole title.
+            wanted = normalize_artist(artist)
+            words = cleaned.split()
+            for count in range(len(words) - 1, 0, -1):
+                if normalize_artist(" ".join(words[:count])) == wanted:
+                    cleaned = " ".join(words[count:])
+                    break
     return _WHITESPACE.sub(" ", cleaned).strip() or (title or "").strip()
 
 
