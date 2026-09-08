@@ -487,7 +487,42 @@ createApp({
     this.refreshJobs();
     this.connectEvents();
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js");
+      // A new worker calls skipWaiting()/clients.claim() and takes over at
+      // once, but the page carries on running whatever app.js it already
+      // loaded - so a fresh build only appeared after a manual hard
+      // refresh. Reload when control changes, which is the moment the new
+      // version is actually live.
+      //
+      // Only when there was already a controller: on a first install
+      // clients.claim() also fires controllerchange, and nothing is stale
+      // then, so reloading would just be a pointless flash.
+      // Tracked at event time, not at mount: on a first visit the worker is
+      // not controlling yet, so a flag captured here would be false forever
+      // and every later update would be ignored.
+      let sawController = !!navigator.serviceWorker.controller;
+      let reloading = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (!sawController) {
+          // First claim of this page - it is already the newest build.
+          sawController = true;
+          return;
+        }
+        if (reloading) return;
+        reloading = true;
+        window.location.reload();
+      });
+      // updateViaCache "none" keeps the browser's HTTP cache off sw.js
+      // itself, so a new worker is always noticed.
+      navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" })
+        .then((registration) => {
+          registration.update();
+          // An installed PWA can sit backgrounded for days; check again
+          // whenever it comes back to the foreground.
+          document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) registration.update();
+          });
+        })
+        .catch(() => { /* no service worker is not fatal */ });
     }
   },
 }).mount("#app");

@@ -4,7 +4,7 @@
    responses and the SSE stream are never cached - job state and search
    results must always be live. */
 
-const CACHE = "beetdrop-shell-v14";
+const CACHE = "beetdrop-shell-v15";
 const SHELL = [
   "/",
   "/static/style.css",
@@ -17,7 +17,12 @@ const SHELL = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())
+    caches.open(CACHE)
+      // cache: "reload" bypasses the browser's own HTTP cache, so a new
+      // shell cache is never seeded with the copies it is meant to replace.
+      .then((cache) => cache.addAll(
+        SHELL.map((url) => new Request(url, { cache: "reload" }))))
+      .then(() => self.skipWaiting())
   );
 });
 
