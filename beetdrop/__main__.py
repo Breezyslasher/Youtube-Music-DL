@@ -242,6 +242,66 @@ def cmd_lyrics_probe(args, config: Config) -> int:
     return 0
 
 
+def cmd_apple_raw(args, config: Config) -> int:
+    """Show exactly what Apple returns, unfiltered.
+
+    A status number alone does not say whether a 429 is Apple rate
+    limiting the account or something in front of it - a proxy, a CDN
+    block page - answering on Apple's behalf. The body says which, so
+    this prints it verbatim: no retries, no backoff, no interpretation.
+    """
+    import requests
+
+    from . import apple
+
+    def show(label: str, response) -> None:
+        print("\n=== %s ===" % label)
+        print("HTTP %s %s" % (response.status_code, response.reason or ""))
+        for name, value in sorted(response.headers.items()):
+            print("  %s: %s" % (name, value))
+        body = (response.text or "").strip()
+        print("--- body (%d bytes) ---" % len(body))
+        print(body[:args.bytes] if body else "<empty>")
+        if len(body) > args.bytes:
+            print("... truncated, %d more bytes" % (len(body) - args.bytes))
+
+    # 1. The web player scrape. This is the first thing the Settings test
+    #    does and the heaviest call we make, so it is the likeliest 429.
+    try:
+        show("GET %s (developer token scrape)" % apple.WEB_PLAYER,
+             requests.get(apple.WEB_PLAYER,
+                          headers={"User-Agent": apple.UA},
+                          timeout=apple.TIMEOUT))
+    except Exception as exc:
+        print("\n=== %s ===\nrequest failed: %s: %s" % (
+            apple.WEB_PLAYER, type(exc).__name__, exc))
+
+    if not config.apple_token:
+        print("\nNo media-user-token configured, so the catalog call is "
+              "skipped. Sign in on the Settings page first.")
+        return 1
+
+    # 2. The catalog search, with the real token pair.
+    try:
+        developer = apple.fetch_developer_token()
+    except apple.AppleError as exc:
+        print("\ncould not get a developer token, so the catalog call is "
+              "skipped:\n%s" % exc)
+        return 1
+    storefront = config.apple_storefront or "us"
+    try:
+        show("GET catalog search (storefront=%s)" % storefront,
+             requests.get(apple.SEARCH_URL % storefront,
+                          headers=apple._headers(developer, config.apple_token),
+                          params={"term": "Billie Eilish lovely",
+                                  "types": "songs", "limit": "1"},
+                          timeout=apple.TIMEOUT))
+    except Exception as exc:
+        print("\ncatalog request failed: %s: %s" % (type(exc).__name__, exc))
+        return 1
+    return 0
+
+
 def cmd_serve(args, config: Config) -> int:
     import uvicorn
 
@@ -304,6 +364,14 @@ def main(argv=None) -> int:
                          help="track length in seconds; Apple matches within "
                               "8s, so passing it explains a missed match")
     p_probe.set_defaults(func=cmd_lyrics_probe)
+
+    p_raw = sub.add_parser(
+        "apple-raw",
+        help="print Apple's raw response - status, headers and body - so a "
+             "429 can be checked for what it actually is")
+    p_raw.add_argument("--bytes", type=int, default=2000,
+                       help="how much of each body to print (default 2000)")
+    p_raw.set_defaults(func=cmd_apple_raw)
 
     p_serve = sub.add_parser("serve", help="run the web API")
     p_serve.add_argument("--host", default="0.0.0.0")
