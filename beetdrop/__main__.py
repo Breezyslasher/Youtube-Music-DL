@@ -471,6 +471,27 @@ def cmd_apple_explore(args, config: Config) -> int:
             if carried:
                 print("      -> lyrics can be batched; this is the big win")
 
+    # Every track currently costs two calls: search for the id, then fetch
+    # the lyrics. If the search can carry the lyrics itself that becomes
+    # one - a bigger saving than batching, and it needs no id up front.
+    print("\n== can the search itself carry the lyrics? ==")
+    for parameter in ("include[songs]", "include"):
+        for rel in ("syllable-lyrics", "lyrics"):
+            data = call("GET /search&%s=%s" % (parameter, rel),
+                        apple.SEARCH_URL % storefront,
+                        {"term": query, "types": "songs", "limit": "1",
+                         parameter: rel})
+            rows = (((data or {}).get("results") or {}).get("songs")
+                    or {}).get("data") or []
+            carried = sum(1 for row in rows
+                          if ((row.get("relationships") or {}).get(rel, {})
+                              .get("data")))
+            if rows:
+                print("      %d of %d results carried %s" % (
+                    carried, len(rows), rel))
+                if carried:
+                    print("      -> one request per track instead of two")
+
     print("\n== can an exact ISRC replace the text search? ==")
     if not isrc:
         print("  skipped: no ISRC tag found to test with")
