@@ -325,12 +325,6 @@ def cmd_apple_raw(args, config: Config) -> int:
     return 0
 
 
-# How many library tracks to try before giving up on finding song ids.
-# Small on purpose: three ids is all the probe needs, and every attempt
-# is a live Apple call.
-MAX_ID_ATTEMPTS = 12
-
-
 def cmd_apple_explore(args, config: Config) -> int:
     """Test whether Apple offers a cheaper route than search-then-fetch.
 
@@ -386,40 +380,41 @@ def cmd_apple_explore(args, config: Config) -> int:
     # 2. Collect real material to probe with: song ids via the normal
     #    search, and an ISRC from a tagged file.
     #
-    #    Strictly bounded. Searching once per library file until three ids
-    #    turn up looks fine until Apple is rate limiting, when every search
-    #    sits through the backoff and the command goes silent for hours -
-    #    which is exactly when someone runs this to find out what is wrong.
+    #    One search, taken raw. search_song retries through the whole
+    #    backoff - four minutes of silence on a rate-limited account - and
+    #    a diagnostic must never do that: here the status code IS the
+    #    answer, so it is reported rather than waited out. One search also
+    #    returns several songs, so three ids cost one request, not three.
     ids, isrc, tried = [], "", 0
-    print("\nresolving a few song ids to probe with...")
+    query = ""
     for path in sorted(config.music_root.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
             continue
         if not isrc and tried < args.sample:
             isrc = read_isrc(path)
-        if len(ids) >= 3 or tried >= MAX_ID_ATTEMPTS:
-            break
-        artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
-        if not (artist and title):
-            continue
         tried += 1
-        try:
-            found = apple.search_song(developer, config.apple_token, storefront,
-                                      artist, tidy_track_name(title, artist),
-                                      duration)
-        except apple.AppleUnavailable as exc:
-            print("  Apple will not answer: %s" % exc)
-            print("\nNothing below can be tested until that clears. This is "
-                  "the rate limit, not a fault in your setup - wait a few "
-                  "minutes and run it again.")
-            return 2
-        print("  %-38s %s" % (title[:38], found or "no match"))
-        if found:
-            ids.append(found)
-    if not ids:
-        print("\ncould not resolve any song ids to probe with")
+        if not query:
+            artist, title, _, _ = read_track_meta(path) or ("", "", "", None)
+            if artist and title:
+                query = "%s %s" % (artist, tidy_track_name(title, artist))
+        if query and (isrc or tried >= args.sample):
+            break
+    if not query:
+        print("\nno track with both an artist and a title tag to search with")
         return 1
-    print("\nprobing with song ids %s%s" % (
+
+    print("\nresolving song ids with one search for %r ..." % query[:60])
+    found = call("GET /search", apple.SEARCH_URL % storefront,
+                 {"term": query, "types": "songs", "limit": "5"})
+    songs_found = (((found or {}).get("results") or {}).get("songs")
+                   or {}).get("data") or []
+    ids = [s.get("id") for s in songs_found if s.get("id")][:3]
+    if not ids:
+        print("\nNothing below can be tested without a song id. If the status "
+              "above was 429 this is the rate limit, not a fault in your "
+              "setup - wait a few minutes and run it again.")
+        return 2
+    print("probing with song ids %s%s" % (
         ", ".join(ids), (" and ISRC %s" % isrc) if isrc else " (no ISRC found)"))
 
     songs = "https://amp-api.music.apple.com/v1/catalog/%s/songs" % storefront
