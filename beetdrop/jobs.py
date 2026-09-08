@@ -169,12 +169,18 @@ class JobManager:
                 # Backfill synced lyrics across the whole library. Not a
                 # download; it reads the library it also writes .lrc into.
                 check_storage(config.music_root, config.min_free_mb)
-                self._update(job_id, title="Library lyrics scan", stage="scanning")
+                # video_id carries the mode: "__refresh__" also purges
+                # placeholder sidecars before re-fetching.
+                purge = job["video_id"] == "__refresh__"
+                self._update(job_id, stage="scanning", title=(
+                    "Library lyrics refresh" if purge else "Library lyrics scan"))
                 result = backfill_lyrics(config, on_progress=on_progress,
-                                         on_detail=on_detail)
+                                         on_detail=on_detail, purge_bad=purge)
                 detail = "added lyrics to %d of %d tracks missing them" % (
                     result.added, result.total)
                 extras = []
+                if result.purged:
+                    extras.append("%d placeholder files removed" % result.purged)
                 if result.no_match:
                     extras.append("%d with no synced lyrics found" % result.no_match)
                 if result.skipped:

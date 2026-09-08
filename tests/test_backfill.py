@@ -171,6 +171,85 @@ class TestBackfill:
         assert track.with_suffix(".lrc").read_text() == "[00:00.00]already"
 
 
+SYNTHETIC = "\n".join(
+    "[%02d:%02d.00]Wob gopini den %d" % ((12 + i * 4) // 60, (12 + i * 4) % 60, i)
+    for i in range(40))
+# Real lyrics: irregular line timing, as any human transcription has.
+REAL = ("[00:11.20]Thought I found a way\n[00:14.05]Thought I found a way out\n"
+        "[00:19.90]But you never go away\n[00:21.00]So I guess I gotta stay now\n"
+        "[00:30.40]Oh, I hope some day I'll make it out of here\n"
+        "[00:37.10]Even if it takes all night or a hundred years\n"
+        "[00:44.00]Need a place to hide but I can't find one near\n"
+        "[00:52.75]Wanna feel alive, outside I can fight my fear\n"
+        "[01:03.10]Isn't it lovely, all alone?\n[01:09.44]Heart made of glass\n")
+
+
+class TestSyntheticDetection:
+    def test_uniform_timing_is_flagged(self):
+        from beetdrop.lyrics import looks_synthetic
+        assert looks_synthetic(SYNTHETIC) is True
+
+    def test_real_lyrics_pass(self):
+        from beetdrop.lyrics import looks_synthetic
+        assert looks_synthetic(REAL) is False
+
+    def test_short_lyrics_never_flagged(self):
+        from beetdrop.lyrics import looks_synthetic
+        short = "[00:01.00]a\n[00:05.00]b\n[00:09.00]c"
+        assert looks_synthetic(short) is False
+
+    def test_synthetic_never_returned_by_fetch(self, monkeypatch):
+        import beetdrop.lyrics as lyrics_module
+        monkeypatch.setattr(lyrics_module, "_lrclib",
+                            lambda a, t, al, d: SYNTHETIC)
+        monkeypatch.setattr(lyrics_module.musixmatch, "fetch_synced",
+                            lambda *a, **k: None)
+        # A source handing back placeholder text yields nothing at all.
+        assert lyrics_module.fetch_synced_lyrics("Billie Eilish", "lovely") is None
+
+    def test_falls_back_when_primary_is_synthetic(self, monkeypatch):
+        import beetdrop.lyrics as lyrics_module
+        monkeypatch.setattr(lyrics_module, "_lrclib",
+                            lambda a, t, al, d: SYNTHETIC)
+        monkeypatch.setattr(lyrics_module.musixmatch, "fetch_synced",
+                            lambda *a, **k: REAL)
+        assert lyrics_module.fetch_synced_lyrics(
+            "A", "S", musixmatch_token="tok") == REAL
+
+
+class TestPurge:
+    def test_purges_only_placeholder_files(self, tmp_path):
+        from beetdrop.backfill import find_bad_lyrics, purge_bad_lyrics
+        (tmp_path / "A").mkdir()
+        bad = tmp_path / "A" / "junk.lrc"
+        bad.write_text(SYNTHETIC)
+        good = tmp_path / "A" / "real.lrc"
+        good.write_text(REAL)
+
+        assert [p.name for p in find_bad_lyrics(tmp_path)] == ["junk.lrc"]
+        assert purge_bad_lyrics(tmp_path) == 1
+        assert not bad.exists()
+        assert good.read_text() == REAL  # real lyrics untouched
+
+    def test_refresh_purges_then_refetches(self, tmp_path, monkeypatch):
+        import beetdrop.backfill as bf
+        music = tmp_path / "music"
+        (music / "A").mkdir(parents=True)
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        track = music / "A" / "song.opus"
+        track.write_bytes(b"x")  # tags unreadable; path fallback supplies A/song
+        track.with_suffix(".lrc").write_text(SYNTHETIC)
+
+        monkeypatch.setattr(bf, "fetch_synced_lyrics",
+                            lambda *a, **k: REAL)
+        monkeypatch.setattr(bf, "REQUEST_SPACING", 0)
+        result = bf.backfill_lyrics(config, purge_bad=True)
+        assert result.purged == 1
+        assert result.added == 1
+        assert track.with_suffix(".lrc").read_text() == REAL
+
+
 class TestScanEndpoint:
     def _config(self, tmp_path):
         music = tmp_path / "music"

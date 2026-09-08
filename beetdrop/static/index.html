@@ -225,9 +225,17 @@
       <button type="button" @click="fetchMxmToken" :disabled="fetchingToken">
         {{ fetchingToken ? 'Fetching token...' : 'Fetch Musixmatch token' }}
       </button>
-      <button type="button" @click="scanLyrics" :disabled="scanningLyrics">
+      <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
       </button>
+      <button type="button" @click="scanLyrics(true)" :disabled="scanningLyrics">
+        {{ scanningLyrics ? 'Starting...' : 'Delete bad lyrics and re-fetch' }}
+      </button>
+      <p class="note">
+        Re-fetch deletes placeholder .lrc files first - generated junk with
+        perfectly even line timing, whatever wrote it - then looks those
+        tracks up again. Real lyrics, in any language, are never deleted.
+      </p>
       <p class="note">
         Scans your whole library for tracks that have no .lrc yet and
         fetches synced lyrics for them using the source above. Artist and

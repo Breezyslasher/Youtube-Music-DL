@@ -42,6 +42,12 @@ Standalone: no beets, no external tagger, one container.
    come from the tags, falling back to the folder/file names
    ({Artist}/{Album}/{NN} - {Title} or "Artist - Title"); duration always
    comes from the decoded audio, so even untagged files can be matched.
+   Placeholder lyrics are rejected: an LRC whose lines are perfectly
+   evenly spaced is generated junk, never a real transcription, so it is
+   never written. "Delete bad lyrics and re-fetch" (CLI: `scan-lyrics
+   --refresh`) removes existing placeholder sidecars - whatever wrote
+   them - and looks those tracks up again. The check is timing-only, so
+   real lyrics in any language, romaji included, are never deleted.
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the
@@ -131,7 +137,7 @@ CLI:
 ```
 python -m beetdrop search "artist song" [--albums | --videos]
 python -m beetdrop grab <video_id> [--album | --video] [--format opus|m4a|mp3] [--library PATH]
-python -m beetdrop scan-lyrics                 # backfill .lrc for the library
+python -m beetdrop scan-lyrics [--refresh]     # backfill .lrc (--refresh purges junk first)
 python -m beetdrop serve [--host 0.0.0.0] [--port 8090]
 ```
 

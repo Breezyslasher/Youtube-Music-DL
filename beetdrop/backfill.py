@@ -18,7 +18,7 @@ import mutagen
 
 from .config import Config
 from .library import write_lyrics_sidecar
-from .lyrics import fetch_synced_lyrics
+from .lyrics import fetch_synced_lyrics, looks_synthetic
 
 # Leading track (and disc) number on a filename, e.g. "02 - ", "1-02 - ".
 _TRACK_PREFIX = re.compile(r"^(?:\d+-)?\d+\s*[-.]\s*")
@@ -42,6 +42,43 @@ class BackfillResult:
     added: int      # sidecars written
     skipped: int    # files with no usable artist/title tags
     no_match: int   # looked up but no synced lyrics found
+    purged: int = 0  # bogus placeholder sidecars deleted first
+
+
+def iter_lyrics_files(root: Path):
+    for path in sorted(root.rglob("*.lrc")):
+        if path.is_file():
+            yield path
+
+
+def find_bad_lyrics(root: Path) -> list:
+    """Existing .lrc sidecars that are generated placeholder text rather
+    than real lyrics (perfectly uniform line timing)."""
+    bad = []
+    for path in iter_lyrics_files(root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if looks_synthetic(text):
+            bad.append(path)
+    return bad
+
+
+def purge_bad_lyrics(root: Path, on_detail: Callable[[str], None] = None) -> int:
+    """Delete placeholder .lrc sidecars so they can be re-fetched. Only
+    files that fail the synthetic check are removed - real lyrics, in any
+    language, are never touched."""
+    removed = 0
+    for path in find_bad_lyrics(root):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    if on_detail:
+        on_detail("removed %d placeholder lyric files" % removed)
+    return removed
 
 
 def iter_audio_missing_lyrics(root: Path):
@@ -112,12 +149,20 @@ def backfill_lyrics(
     on_progress: Callable[[float], None] = _noop,
     on_detail: Callable[[str], None] = _noop,
     files: Optional[list] = None,
+    purge_bad: bool = False,
 ) -> BackfillResult:
     """Fetch and write .lrc sidecars for library tracks missing them.
+
+    purge_bad first deletes placeholder sidecars (generated junk), so the
+    tracks they were blocking get looked up fresh in the same run.
 
     on_progress/on_detail let the job layer mirror the scan and also act as
     cancellation checkpoints. `files` lets a caller pre-compute the list.
     """
+    purged = 0
+    if purge_bad:
+        on_detail("checking existing lyrics for placeholder junk...")
+        purged = purge_bad_lyrics(config.music_root, on_detail)
     if files is None:
         files = list(iter_audio_missing_lyrics(config.music_root))
     total = len(files)
@@ -159,4 +204,4 @@ def backfill_lyrics(
             on_progress((index + 1) / total * 100.0)
 
     return BackfillResult(total=total, added=added, skipped=skipped,
-                          no_match=no_match)
+                          no_match=no_match, purged=purged)
