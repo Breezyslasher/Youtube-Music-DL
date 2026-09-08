@@ -39,6 +39,94 @@ class TestFetchSynced:
                             lambda *a, **k: FakeResp(ok=False))
         assert lyrics_module.fetch_synced_lyrics("A", "S") is None
 
+
+class TestLrclibCascade:
+    """The strict /api/get misses a lot; each fallback loosens one
+    constraint and /api/search is the fuzzy last resort."""
+
+    def _router(self, monkeypatch, handler):
+        calls = []
+
+        def fake_get(url, params=None, **kwargs):
+            calls.append((url, dict(params or {})))
+            return FakeResp(**handler(url, dict(params or {})))
+        monkeypatch.setattr(lyrics_module.requests, "get", fake_get)
+        return calls
+
+    def test_falls_back_to_lookup_without_album(self, monkeypatch):
+        # The album tag disagrees with LRCLIB; dropping it must still hit.
+        def handler(url, params):
+            if params.get("album_name"):
+                return {"ok": False}
+            return {"data": {"syncedLyrics": "[00:01.00]A\n[00:05.00]B"}}
+        calls = self._router(monkeypatch, handler)
+        assert lyrics_module.fetch_synced_lyrics(
+            "Artist", "Song", "Wrong Album", 200) == "[00:01.00]A\n[00:05.00]B"
+        assert len(calls) == 2  # strict, then album dropped
+
+    def test_falls_back_to_primary_artist_and_bare_title(self, monkeypatch):
+        def handler(url, params):
+            if (params.get("artist_name") == "Billie Eilish"
+                    and params.get("track_name") == "lovely"):
+                return {"data": {"syncedLyrics": "[00:01.00]Thought"}}
+            return {"ok": False}
+        self._router(monkeypatch, handler)
+        assert lyrics_module.fetch_synced_lyrics(
+            "Billie Eilish, Khalid", "lovely (with Khalid)", "", 200) \
+            == "[00:01.00]Thought"
+
+    def test_search_used_when_every_get_misses(self, monkeypatch):
+        # Duration is 6s off, so /api/get (±2s) can never match; the fuzzy
+        # search still finds it and picks the closest candidate.
+        def handler(url, params):
+            if url == lyrics_module.LRCLIB_SEARCH:
+                return {"data": [
+                    {"syncedLyrics": "[00:01.00]far", "duration": 260.0},
+                    {"syncedLyrics": "[00:01.00]close", "duration": 206.0},
+                ]}
+            return {"ok": False}
+        self._router(monkeypatch, handler)
+        assert lyrics_module.fetch_synced_lyrics(
+            "Artist", "Song", "", 200) == "[00:01.00]close"
+
+    def test_search_rejects_a_different_recording(self, monkeypatch):
+        # Only a wildly different duration is on offer: not our track.
+        def handler(url, params):
+            if url == lyrics_module.LRCLIB_SEARCH:
+                return {"data": [{"syncedLyrics": "[00:01.00]x", "duration": 400.0}]}
+            return {"ok": False}
+        self._router(monkeypatch, handler)
+        assert lyrics_module.fetch_synced_lyrics("Artist", "Song", "", 200) is None
+
+    def test_search_candidates_without_synced_are_ignored(self, monkeypatch):
+        def handler(url, params):
+            if url == lyrics_module.LRCLIB_SEARCH:
+                return {"data": [{"plainLyrics": "words", "duration": 200.0},
+                                 {"syncedLyrics": "", "duration": 200.0}]}
+            return {"ok": False}
+        self._router(monkeypatch, handler)
+        assert lyrics_module.fetch_synced_lyrics("Artist", "Song", "", 200) is None
+
+
+class TestNameNormalising:
+    @pytest.mark.parametrize("raw,expected", [
+        ("Billie Eilish, Khalid", "Billie Eilish"),
+        ("Tegan and Sara feat. The Lonely Island", "Tegan and Sara"),
+        ("Hall & Oates", "Hall & Oates"),   # "&" never split
+        ("AC/DC", "AC/DC"),                 # "/" never split
+    ])
+    def test_primary_artist(self, raw, expected):
+        assert lyrics_module._primary_artist(raw) == expected
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("lovely (with Khalid)", "lovely"),
+        ("Song (Remastered 2011)", "Song"),
+        ("Song feat. Someone", "Song"),
+        ("Plain Title", "Plain Title"),
+    ])
+    def test_simplify_title(self, raw, expected):
+        assert lyrics_module._simplify_title(raw) == expected
+
     def test_network_error_is_none(self, monkeypatch):
         def boom(*a, **k):
             raise lyrics_module.requests.RequestException("down")

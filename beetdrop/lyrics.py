@@ -20,7 +20,17 @@ from . import musixmatch
 from .mb import USER_AGENT
 
 LRCLIB_GET = "https://lrclib.net/api/get"
+LRCLIB_SEARCH = "https://lrclib.net/api/search"
 TIMEOUT = 10
+# How far a fuzzy search hit may be from the file's real duration.
+SEARCH_DURATION_TOLERANCE = 8
+
+# "(feat. X)", "(Remastered 2011)", "(Live)" - a trailing parenthetical
+# that the lyrics database usually does not carry in its track name.
+_PAREN_SUFFIX = re.compile(r"\s*[\(\[][^)\]]*[\)\]]\s*$")
+_FEAT = re.compile(r"\s*\b(?:feat|ft|featuring)\b\.?\s+.*$", re.I)
+# Conservative: "&" and "/" are left alone so Hall & Oates and AC/DC survive.
+_ARTIST_SEP = re.compile(r"\s*(?:,|;|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b)\s*", re.I)
 
 _TIMESTAMP = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 # A placeholder generator spaces every line identically; real transcribed
@@ -59,26 +69,108 @@ def looks_synthetic(lrc: str) -> bool:
     return gap > 0 and hits / len(gaps) >= _UNIFORM_RATIO
 
 
-def _lrclib(artist: str, title: str, album: str,
-            duration_seconds: Optional[int]) -> Optional[str]:
-    params = {"artist_name": artist, "track_name": title}
-    if album:
-        params["album_name"] = album
-    if duration_seconds:
-        params["duration"] = str(int(duration_seconds))
+def _primary_artist(artist: str) -> str:
+    """"Billie Eilish, Khalid" -> "Billie Eilish"; the name a lyrics
+    database files the track under."""
+    return _ARTIST_SEP.split(artist, 1)[0].strip() or artist.strip()
+
+
+def _simplify_title(title: str) -> str:
+    """"lovely (with Khalid)" / "Song (Remastered)" -> the bare title."""
+    simple = _PAREN_SUFFIX.sub("", _FEAT.sub("", title)).strip()
+    return simple or title.strip()
+
+
+def _get_json(url: str, params: dict):
     try:
-        response = requests.get(LRCLIB_GET, params=params, timeout=TIMEOUT,
+        response = requests.get(url, params=params, timeout=TIMEOUT,
                                 headers={"User-Agent": USER_AGENT})
     except requests.RequestException:
         return None
     if not response.ok:  # 404 = no lyrics known; normal
         return None
     try:
-        data = response.json()
+        return response.json()
     except ValueError:
         return None
-    synced = (data.get("syncedLyrics") or "").strip()
-    return synced or None  # plain-only results are intentionally skipped
+
+
+def _synced_of(row) -> Optional[str]:
+    if not isinstance(row, dict):
+        return None
+    # Plain-only results are intentionally skipped.
+    return (row.get("syncedLyrics") or "").strip() or None
+
+
+def _lrclib_get(artist: str, title: str, album: str,
+                duration_seconds: Optional[int]) -> Optional[str]:
+    params = {"artist_name": artist, "track_name": title}
+    if album:
+        params["album_name"] = album
+    if duration_seconds:
+        params["duration"] = str(int(duration_seconds))
+    return _synced_of(_get_json(LRCLIB_GET, params))
+
+
+def _lrclib_search(artist: str, title: str,
+                   duration_seconds: Optional[int]) -> Optional[str]:
+    """Fuzzy lookup: take the synced candidate closest to our duration."""
+    rows = _get_json(LRCLIB_SEARCH,
+                     {"artist_name": artist, "track_name": title})
+    if not isinstance(rows, list):
+        return None
+    best, best_delta = None, None
+    for row in rows:
+        synced = _synced_of(row)
+        if not synced:
+            continue
+        row_duration = row.get("duration") if isinstance(row, dict) else None
+        if duration_seconds and row_duration:
+            delta = abs(float(row_duration) - float(duration_seconds))
+            if delta > SEARCH_DURATION_TOLERANCE:
+                continue  # a different recording of the same song
+        else:
+            delta = float("inf")
+        if best is None or delta < best_delta:
+            best, best_delta = synced, delta
+    return best
+
+
+def _lrclib(artist: str, title: str, album: str,
+            duration_seconds: Optional[int]) -> Optional[str]:
+    """LRCLIB, tried from most precise to most forgiving.
+
+    /api/get is an exact match - the album has to agree and the duration
+    must be within ~2s - so one strict call misses a lot in practice:
+    album names differ between taggers, and a YouTube rip is often a
+    couple of seconds off the release. Each step drops one constraint,
+    and /api/search is the fuzzy last resort.
+    """
+    artist, title = artist.strip(), title.strip()
+    primary, simple = _primary_artist(artist), _simplify_title(title)
+    loosened = (primary, simple) != (artist, title)
+
+    attempts = [(artist, title, album, duration_seconds),
+                (artist, title, "", duration_seconds)]
+    if loosened:
+        attempts.append((primary, simple, "", duration_seconds))
+
+    seen = set()
+    for one_artist, one_title, one_album, one_duration in attempts:
+        key = (one_artist.lower(), one_title.lower(), one_album.lower(), one_duration)
+        if key in seen:
+            continue
+        seen.add(key)
+        lrc = _lrclib_get(one_artist, one_title, one_album, one_duration)
+        if lrc:
+            return lrc
+
+    for one_artist, one_title in ([(artist, title), (primary, simple)]
+                                  if loosened else [(artist, title)]):
+        lrc = _lrclib_search(one_artist, one_title, duration_seconds)
+        if lrc:
+            return lrc
+    return None
 
 
 def _musixmatch(artist, title, album, duration_seconds, token):
