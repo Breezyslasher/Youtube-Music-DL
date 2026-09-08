@@ -1075,3 +1075,51 @@ class TestOneRequestPerTrack:
                  "relationships": self.SONG["relationships"]}
         lrc, _ = self._run(monkeypatch, wrong)
         assert lrc is None      # a different recording, lyrics or not
+
+
+class TestWrongSongIsRejected:
+    """A catalog search is a loose text match, so duration alone is not
+    enough. From a real library: "Electric Light Orchestra - Starlight"
+    came back as "Electric Light Orchestra Part II - Thousand Eyes" - a
+    different song by a different band of about the same length. Wrong
+    lyrics are worse than none."""
+
+    def _song(self, name, artist, millis=200000):
+        return {"id": "1", "attributes": {"name": name, "artistName": artist,
+                                          "durationInMillis": millis}}
+
+    @pytest.mark.parametrize("their_artist,their_title,accept", [
+        ("Electric Light Orchestra Part II", "Thousand Eyes", False),
+        ("Electric Light Orchestra", "Starlight", True),
+        ("Beyonce", "Starlight", False),
+    ])
+    def test_relevance(self, their_artist, their_title, accept):
+        song = self._song(their_title, their_artist)
+        assert apple.looks_like_the_track(
+            song, "Electric Light Orchestra", "Starlight") is accept
+
+    @pytest.mark.parametrize("mine,theirs", [
+        ("Idina Menzel featuring AURORA", "Idina Menzel"),
+        ("Billie Eilish", "Billie Eilish & Khalid"),
+        ("The Outfield", "The Outfield"),
+    ])
+    def test_a_featured_credit_is_still_the_same_artist(self, mine, theirs):
+        song = self._song("Into the Unknown", theirs)
+        assert apple.looks_like_the_track(song, mine, "Into the Unknown")
+
+    @pytest.mark.parametrize("theirs", ["Hello (Live)", "Hello"])
+    def test_a_qualifier_does_not_reject(self, theirs):
+        assert apple.looks_like_the_track(
+            self._song(theirs, "Adele"), "Adele", "Hello")
+
+    def test_missing_names_are_not_treated_as_a_mismatch(self):
+        # Absence is not disagreement - the same mistake the has-lyrics
+        # flag taught, and it must not be repeated here.
+        assert apple.looks_like_the_track({"id": "1", "attributes": {}},
+                                          "Adele", "Hello")
+
+    def test_a_wrong_song_is_not_chosen_even_on_a_perfect_duration(self):
+        songs = [self._song("Thousand Eyes", "Electric Light Orchestra Part II",
+                            200000)]
+        assert apple._best_by_duration(
+            songs, 200, "Electric Light Orchestra", "Starlight") is None

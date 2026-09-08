@@ -21,10 +21,13 @@ from __future__ import annotations
 import re
 import threading
 import time
+from difflib import SequenceMatcher
 from typing import Optional
 from xml.etree import ElementTree as ET
 
 import requests
+
+from .matching import base_title, normalize_artist
 
 SEARCH_URL = "https://amp-api.music.apple.com/v1/catalog/%s/search"
 LYRICS_URL = "https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics"
@@ -53,6 +56,8 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 _JWT = re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}")
 _ASSET = re.compile(r'src="(/assets/[^"]+\.js)"')
+_ARTIST_SEP = re.compile(
+    r"\s*(?:,|;|&|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b)\s*", re.I)
 
 _TTML_NS = "{http://www.w3.org/ns/ttml}"
 _ITUNES_TIMING = "{http://music.apple.com/lyric-ttml-internal}timing"
@@ -396,9 +401,57 @@ def search_song_row(developer_token: str, storefront: str, artist: str,
     return _best_by_duration(songs, duration_seconds)
 
 
-def _best_by_duration(songs, duration_seconds: Optional[int]):
-    """The candidate closest to the file's length, or None when every one
-    is a different recording."""
+# A catalog search is a loose text match, so duration alone is not enough
+# to accept a result: "Electric Light Orchestra - Starlight" came back as
+# "Electric Light Orchestra Part II - Thousand Eyes", a different song by
+# a different band that happened to run about as long. Wrong lyrics are
+# worse than none, so a candidate has to look like what was asked for.
+MIN_TITLE_RATIO = 0.85
+MIN_ARTIST_RATIO = 0.75
+
+
+def _ratio(one: str, two: str) -> float:
+    return SequenceMatcher(None, one, two).ratio()
+
+
+def _primary_artist(name: str) -> str:
+    """"Billie Eilish, Khalid" / "Idina Menzel featuring AURORA" -> the
+    name a catalogue files the track under."""
+    return _ARTIST_SEP.split(name, 1)[0].strip() or name.strip()
+
+
+def _same_artist(mine: str, theirs: str) -> float:
+    """Best score across the full credit and the primary name, so
+    "Idina Menzel featuring AURORA" still matches "Idina Menzel"."""
+    ours = {normalize_artist(mine), normalize_artist(_primary_artist(mine))}
+    hers = {normalize_artist(theirs), normalize_artist(_primary_artist(theirs))}
+    return max(_ratio(a, b) for a in ours for b in hers)
+
+
+def looks_like_the_track(song, artist: str, title: str) -> bool:
+    """Whether a catalog hit really is the track we asked for.
+
+    Judges only what Apple actually told us. A row without a name is not
+    evidence of a mismatch, and rejecting on absent data is the mistake
+    the has-lyrics flag already taught: only a real disagreement counts.
+    """
+    attributes = (song or {}).get("attributes") or {}
+    their_title = attributes.get("name") or ""
+    their_artist = attributes.get("artistName") or ""
+    if title and their_title:
+        if _ratio(base_title(their_title), base_title(title)) < MIN_TITLE_RATIO:
+            return False
+    if artist and their_artist:
+        if _same_artist(artist, their_artist) < MIN_ARTIST_RATIO:
+            return False
+    return True
+
+
+def _best_by_duration(songs, duration_seconds: Optional[int],
+                      artist: str = "", title: str = ""):
+    """The candidate closest to the file's length that also looks like the
+    track, or None when none of them do."""
+    songs = [s for s in (songs or []) if looks_like_the_track(s, artist, title)]
     best, best_delta = None, None
     for song in songs or []:
         attributes = song.get("attributes") or {}
@@ -488,7 +541,7 @@ def search_with_lyrics(developer_token: str, media_user_token: str,
         songs = data["results"]["songs"]["data"]
     except (KeyError, TypeError):
         return None, None
-    best = _best_by_duration(songs, duration_seconds)
+    best = _best_by_duration(songs, duration_seconds, artist, title)
     return best, _ttml_of(best)
 
 
