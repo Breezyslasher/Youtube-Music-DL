@@ -519,6 +519,20 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             apple.check_token, config.apple_token, config.apple_storefront)
         return result
 
+    @app.get("/api/lyrics/stats", dependencies=[protected])
+    async def api_lyrics_stats():
+        """How much of the library has lyrics, and how much is word-level.
+        Read-only: it walks the library and reads sidecars, nothing else."""
+        from dataclasses import asdict
+
+        from .backfill import lyrics_stats
+        config = effective_config()
+        stats = await asyncio.to_thread(lyrics_stats, config.music_root)
+        body = asdict(stats)
+        body["coverage_pct"] = round(stats.coverage_pct, 1)
+        body["word_pct"] = round(stats.word_pct, 1)
+        return body
+
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False):
         """Backfill synced lyrics for library tracks that have no .lrc yet.

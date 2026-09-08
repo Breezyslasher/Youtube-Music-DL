@@ -50,6 +50,51 @@ class BackfillResult:
     purged: int = 0  # bogus placeholder sidecars deleted first
 
 
+@dataclass
+class LyricsStats:
+    """A read-only picture of the library's lyric coverage."""
+    audio_files: int = 0
+    with_lyrics: int = 0
+    word_level: int = 0    # Enhanced (A2) - inline per-word timing
+    line_level: int = 0
+    missing: int = 0
+    placeholder: int = 0   # generated junk still sitting in the library
+
+    @property
+    def coverage_pct(self) -> float:
+        return 100.0 * self.with_lyrics / self.audio_files if self.audio_files else 0.0
+
+    @property
+    def word_pct(self) -> float:
+        return 100.0 * self.word_level / self.with_lyrics if self.with_lyrics else 0.0
+
+
+def lyrics_stats(root: Path) -> LyricsStats:
+    """Count how much of the library has lyrics, and how much of that is
+    word-by-word. Reads only; nothing is written or fetched."""
+    stats = LyricsStats()
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        stats.audio_files += 1
+        sidecar = path.with_suffix(".lrc")
+        if not sidecar.is_file():
+            continue
+        stats.with_lyrics += 1
+        try:
+            text = sidecar.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if has_word_timing(text):
+            stats.word_level += 1
+        else:
+            stats.line_level += 1
+        if looks_synthetic(text):
+            stats.placeholder += 1
+    stats.missing = stats.audio_files - stats.with_lyrics
+    return stats
+
+
 def iter_lyrics_files(root: Path):
     for path in sorted(root.rglob("*.lrc")):
         if path.is_file():

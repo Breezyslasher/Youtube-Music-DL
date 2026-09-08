@@ -421,3 +421,64 @@ class TestJunkTagsReachTheLookupClean:
         assert seen["title"] == "Social Casualty"
         # The artist must not appear twice in what a catalogue is asked for.
         assert seen["title"].count("5 Seconds of Summer") == 0
+
+
+class TestLyricsStats:
+    """The "Check library" report: read-only counting, nothing fetched."""
+
+    def _library(self, tmp_path):
+        root = tmp_path / "music"
+        (root / "A").mkdir(parents=True)
+        return root
+
+    def test_counts_each_kind(self, tmp_path):
+        root = self._library(tmp_path)
+        word = root / "A" / "word.opus"
+        word.write_bytes(b"x")
+        word.with_suffix(".lrc").write_text(
+            "[00:09.26]<00:09.26>I <00:09.64>drove")
+        line = root / "A" / "line.opus"
+        line.write_bytes(b"x")
+        line.with_suffix(".lrc").write_text("[00:09.26]I drove\n[00:14.00]away")
+        (root / "A" / "none.opus").write_bytes(b"x")
+        (root / "A" / "cover.jpg").write_bytes(b"x")   # not audio
+        (root / "A" / "clip.mp4").write_bytes(b"x")    # video library
+
+        stats = backfill.lyrics_stats(root)
+        assert stats.audio_files == 3
+        assert stats.with_lyrics == 2
+        assert stats.word_level == 1
+        assert stats.line_level == 1
+        assert stats.missing == 1
+        assert stats.placeholder == 0
+        assert round(stats.coverage_pct) == 67
+        assert round(stats.word_pct) == 50
+
+    def test_counts_placeholder_junk(self, tmp_path):
+        root = self._library(tmp_path)
+        junk = root / "A" / "junk.opus"
+        junk.write_bytes(b"x")
+        junk.with_suffix(".lrc").write_text(SYNTHETIC)
+        stats = backfill.lyrics_stats(root)
+        assert stats.placeholder == 1
+        assert stats.line_level == 1  # junk is line-level too
+
+    def test_empty_library_does_not_divide_by_zero(self, tmp_path):
+        stats = backfill.lyrics_stats(self._library(tmp_path))
+        assert stats.audio_files == 0
+        assert stats.coverage_pct == 0.0 and stats.word_pct == 0.0
+
+    def test_endpoint_reports_the_counts(self, tmp_path):
+        music = tmp_path / "music"
+        (music / "A").mkdir(parents=True)
+        track = music / "A" / "t.opus"
+        track.write_bytes(b"x")
+        track.with_suffix(".lrc").write_text("[00:01.00]<00:01.00>hi")
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        with TestClient(create_app(config)) as client:
+            body = client.get("/api/lyrics/stats").json()
+        assert body["audio_files"] == 1
+        assert body["word_level"] == 1
+        assert body["coverage_pct"] == 100.0
+        assert body["word_pct"] == 100.0

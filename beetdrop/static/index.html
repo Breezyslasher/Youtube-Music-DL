@@ -294,6 +294,19 @@
         on if your player understands Enhanced (A2) LRC - Plex, Navidrome,
         Jellyfin and Kodi are line-level and will show the tags as text.
       </p>
+      <button type="button" @click="checkLyrics" :disabled="checkingLyrics">
+        {{ checkingLyrics ? 'Checking...' : 'Check library' }}
+      </button>
+      <p class="note" v-if="lyricsStats">
+        {{ lyricsStats.with_lyrics }} of {{ lyricsStats.audio_files }} tracks
+        have lyrics ({{ lyricsStats.coverage_pct }}%) &mdash;
+        {{ lyricsStats.word_level }} word-by-word ({{ lyricsStats.word_pct }}% of
+        those), {{ lyricsStats.line_level }} line-level,
+        {{ lyricsStats.missing }} with none.
+        <template v-if="lyricsStats.placeholder">
+          {{ lyricsStats.placeholder }} still look like placeholder junk.
+        </template>
+      </p>
       <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
       </button>
