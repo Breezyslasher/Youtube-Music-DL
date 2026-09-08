@@ -81,8 +81,10 @@ class TestLrclibCascade:
         def handler(url, params):
             if url == lyrics_module.LRCLIB_SEARCH:
                 return {"data": [
-                    {"syncedLyrics": "[00:01.00]far", "duration": 260.0},
-                    {"syncedLyrics": "[00:01.00]close", "duration": 206.0},
+                    {"trackName": "Song", "artistName": "Artist",
+                     "syncedLyrics": "[00:01.00]far", "duration": 260.0},
+                    {"trackName": "Song", "artistName": "Artist",
+                     "syncedLyrics": "[00:01.00]close", "duration": 206.0},
                 ]}
             return {"ok": False}
         self._router(monkeypatch, handler)
@@ -93,16 +95,45 @@ class TestLrclibCascade:
         # Only a wildly different duration is on offer: not our track.
         def handler(url, params):
             if url == lyrics_module.LRCLIB_SEARCH:
-                return {"data": [{"syncedLyrics": "[00:01.00]x", "duration": 400.0}]}
+                return {"data": [{"trackName": "Song", "artistName": "Artist",
+                                  "syncedLyrics": "[00:01.00]x", "duration": 400.0}]}
             return {"ok": False}
         self._router(monkeypatch, handler)
         assert lyrics_module.fetch_synced_lyrics("Artist", "Song", "", 200) is None
 
+    def test_search_rejects_a_different_song(self, monkeypatch):
+        # /api/search matches loosely and will return unrelated tracks.
+        # Attaching their lyrics would be worse than finding nothing -
+        # this is the bug that wrote real lyrics onto "Track 2"/"Artist".
+        def handler(url, params):
+            if url == lyrics_module.LRCLIB_SEARCH:
+                return {"data": [
+                    {"trackName": "Something Else Entirely",
+                     "artistName": "A Different Band",
+                     "syncedLyrics": "[00:01.00]wrong", "duration": 200.0}]}
+            return {"ok": False}
+        self._router(monkeypatch, handler)
+        assert lyrics_module.fetch_synced_lyrics("Artist", "Track 2", "", 200) is None
+
+    def test_search_allows_minor_title_and_artist_variation(self, monkeypatch):
+        def handler(url, params):
+            if url == lyrics_module.LRCLIB_SEARCH:
+                return {"data": [
+                    {"trackName": "lovely (with Khalid)",
+                     "artistName": "Billie Eilish",
+                     "syncedLyrics": "[00:01.00]Thought", "duration": 200.0}]}
+            return {"ok": False}
+        self._router(monkeypatch, handler)
+        assert lyrics_module.fetch_synced_lyrics(
+            "Billie Eilish", "lovely", "", 200) == "[00:01.00]Thought"
+
     def test_search_candidates_without_synced_are_ignored(self, monkeypatch):
         def handler(url, params):
             if url == lyrics_module.LRCLIB_SEARCH:
-                return {"data": [{"plainLyrics": "words", "duration": 200.0},
-                                 {"syncedLyrics": "", "duration": 200.0}]}
+                return {"data": [{"trackName": "Song", "artistName": "Artist",
+                                  "plainLyrics": "words", "duration": 200.0},
+                                 {"trackName": "Song", "artistName": "Artist",
+                                  "syncedLyrics": "", "duration": 200.0}]}
             return {"ok": False}
         self._router(monkeypatch, handler)
         assert lyrics_module.fetch_synced_lyrics("Artist", "Song", "", 200) is None

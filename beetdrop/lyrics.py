@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Optional
 
 import requests
 
 from . import musixmatch
+from .matching import base_title, normalize_artist
 from .mb import USER_AGENT
 
 LRCLIB_GET = "https://lrclib.net/api/get"
@@ -24,6 +26,11 @@ LRCLIB_SEARCH = "https://lrclib.net/api/search"
 TIMEOUT = 10
 # How far a fuzzy search hit may be from the file's real duration.
 SEARCH_DURATION_TOLERANCE = 8
+# /api/search is a loose text match and will happily return a different
+# song, so a candidate has to actually look like what we asked for before
+# its lyrics are accepted. Wrong lyrics are worse than none.
+SEARCH_MIN_TITLE_RATIO = 0.85
+SEARCH_MIN_ARTIST_RATIO = 0.75
 
 # "(feat. X)", "(Remastered 2011)", "(Live)" - a trailing parenthetical
 # that the lyrics database usually does not carry in its track name.
@@ -112,9 +119,24 @@ def _lrclib_get(artist: str, title: str, album: str,
     return _synced_of(_get_json(LRCLIB_GET, params))
 
 
+def _is_same_track(row: dict, artist: str, title: str) -> bool:
+    """Whether a search hit really is the track we asked for. /api/search
+    matches loosely, so without this a generic title can pull back a
+    completely different song's lyrics."""
+    def ratio(a, b):
+        return SequenceMatcher(None, a, b).ratio()
+
+    if ratio(base_title(row.get("trackName") or ""),
+             base_title(title)) < SEARCH_MIN_TITLE_RATIO:
+        return False
+    return ratio(normalize_artist(row.get("artistName") or ""),
+                 normalize_artist(artist)) >= SEARCH_MIN_ARTIST_RATIO
+
+
 def _lrclib_search(artist: str, title: str,
                    duration_seconds: Optional[int]) -> Optional[str]:
-    """Fuzzy lookup: take the synced candidate closest to our duration."""
+    """Fuzzy lookup: of the candidates that really are this track, take
+    the synced one closest to our duration."""
     rows = _get_json(LRCLIB_SEARCH,
                      {"artist_name": artist, "track_name": title})
     if not isinstance(rows, list):
@@ -122,9 +144,9 @@ def _lrclib_search(artist: str, title: str,
     best, best_delta = None, None
     for row in rows:
         synced = _synced_of(row)
-        if not synced:
+        if not synced or not _is_same_track(row, artist, title):
             continue
-        row_duration = row.get("duration") if isinstance(row, dict) else None
+        row_duration = row.get("duration")
         if duration_seconds and row_duration:
             delta = abs(float(row_duration) - float(duration_seconds))
             if delta > SEARCH_DURATION_TOLERANCE:
