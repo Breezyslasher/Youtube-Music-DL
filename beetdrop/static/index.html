@@ -244,8 +244,47 @@
         needs the media-user-token of a signed-in account with an active
         subscription (browser devtools &rarr; any <code>amp-api</code>
         request &rarr; the Media-User-Token header). Lyrics there are
-        licensed content, so this stays inert until you set a token.
+        licensed content, so this stays inert until you set a token. The
+        token is long-lived but not permanent - signing out, a password
+        change or a lapsed subscription invalidates it - so test it here
+        if Apple stops returning lyrics.
       </p>
+      <button type="button" @click="testAppleToken" :disabled="testingApple">
+        {{ testingApple ? 'Testing...' : 'Test Apple token' }}
+      </button>
+      <p class="note" v-if="appleStatus">{{ appleStatus }}</p>
+
+      <details class="applesignin">
+        <summary>Or sign in to Apple and mint the token automatically</summary>
+        <p class="note">
+          Your Apple ID password is used only for the sign-in exchange: it
+          is never stored, never logged, and never sent to Apple - the
+          protocol proves you know it without transmitting it. Only the
+          session is kept (0600, in /config), which is what lets the token
+          be renewed later without signing in again.
+        </p>
+        <label>Apple ID
+          <input v-model="appleId" type="email" autocomplete="off"
+                 spellcheck="false" placeholder="you@example.com">
+        </label>
+        <label>Password
+          <input v-model="applePassword" type="password" autocomplete="off">
+        </label>
+        <button type="button" @click="appleSignIn" :disabled="signingInApple">
+          {{ signingInApple ? 'Signing in...' : 'Sign in to Apple' }}
+        </button>
+        <template v-if="appleFlowId">
+          <label>Verification code
+            <input v-model="appleCode" type="text" inputmode="numeric"
+                   autocomplete="one-time-code" placeholder="6-digit code">
+          </label>
+          <button type="button" @click="appleVerify" :disabled="signingInApple">
+            {{ signingInApple ? 'Verifying...' : 'Verify code' }}
+          </button>
+        </template>
+        <button type="button" @click="appleSignOut">Sign out of Apple</button>
+      </details>
+
       <label class="checkrow">
         <input type="checkbox" v-model="draft.word_lyrics">
         Word-by-word timing (Enhanced LRC) when the source has it

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets as _secrets
+import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -31,7 +33,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, apple, musixmatch, updater
+from . import __version__, apple, applesignin, musixmatch, updater
 from .auth import (
     LoginThrottle,
     check_session_token,
@@ -82,7 +84,21 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class AppleSignInRequest(BaseModel):
+    apple_id: str
+    password: str  # used for SRP only; never stored or logged
+
+
+class AppleVerifyRequest(BaseModel):
+    flow_id: str
+    code: str
+
+
 SESSION_COOKIE = "beetdrop_session"
+
+
+def secrets_token() -> str:
+    return _secrets.token_urlsafe(24)
 
 
 def create_app(base_config: Optional[Config] = None) -> FastAPI:
@@ -420,6 +436,78 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc))
         store.set_settings({"mxm_token": token})
         return {"ok": True, "token_set": True}
+
+    # Sign-in flows live in memory only, between the sign-in call and the
+    # 2FA call. The Apple ID password is never put in here: it is consumed
+    # inside login() and dropped.
+    apple_flows: dict = {}
+    APPLE_FLOW_TTL = 600
+
+    def _sweep_apple_flows() -> None:
+        now = time.time()
+        for key, (_, started) in list(apple_flows.items()):
+            if now - started > APPLE_FLOW_TTL:
+                apple_flows.pop(key, None)
+
+    def _store_apple_token(flow) -> dict:
+        """Mint and save the media-user-token for a signed-in flow."""
+        try:
+            developer_token = apple.fetch_developer_token(force=True)
+        except apple.AppleError as exc:
+            return {"status": "error", "detail": str(exc)}
+        token = flow.mint_media_user_token(developer_token)
+        if not token:
+            return {"status": "error",
+                    "detail": flow.error or "could not mint a media-user-token"}
+        store.set_settings({"apple_token": token})
+        flow.save_session()
+        return {"status": "ok", "token_set": True,
+                "detail": "Signed in - Apple Music lyrics are ready"}
+
+    @app.post("/api/apple/signin", dependencies=[protected])
+    async def api_apple_signin(body: AppleSignInRequest):
+        """Sign in to Apple and mint a media-user-token.
+
+        The password is used for the SRP exchange and then dropped: it is
+        never written to disk, never logged, and SRP does not send it to
+        Apple either. Only the session cookies persist (0600), which is
+        what allows a later re-mint without signing in again.
+        """
+        _sweep_apple_flows()
+        flow = applesignin.AppleSignIn(base.config_dir)
+        status = await asyncio.to_thread(
+            flow.login, body.apple_id.strip(), body.password)
+        if status == applesignin.STATUS_NEEDS_2FA:
+            flow_id = secrets_token()
+            apple_flows[flow_id] = (flow, time.time())
+            return {"status": "needs_2fa", "flow_id": flow_id,
+                    "detail": "Apple sent a verification code"}
+        if status != applesignin.STATUS_OK:
+            raise HTTPException(status_code=401,
+                                detail=flow.error or "Apple sign-in failed")
+        return await asyncio.to_thread(_store_apple_token, flow)
+
+    @app.post("/api/apple/verify", dependencies=[protected])
+    async def api_apple_verify(body: AppleVerifyRequest):
+        _sweep_apple_flows()
+        entry = apple_flows.get(body.flow_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=410,
+                detail="that sign-in expired - start again")
+        flow = entry[0]
+        status = await asyncio.to_thread(flow.submit_code, body.code.strip())
+        if status != applesignin.STATUS_OK:
+            raise HTTPException(status_code=401,
+                                detail=flow.error or "verification failed")
+        apple_flows.pop(body.flow_id, None)
+        return await asyncio.to_thread(_store_apple_token, flow)
+
+    @app.post("/api/apple/signout", dependencies=[protected])
+    async def api_apple_signout():
+        applesignin.AppleSignIn(base.config_dir).clear_session()
+        store.set_settings({"apple_token": ""})
+        return {"ok": True, "detail": "Apple session and token cleared"}
 
     @app.post("/api/lyrics/apple-test", dependencies=[protected])
     async def api_apple_test():

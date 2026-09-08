@@ -38,8 +38,13 @@ Standalone: no beets, no external tagger, one container.
    paste your own. Apple Music has the best coverage by a distance,
    including older catalogue the other two miss entirely, and is the only
    source with per-word timing; it needs the media-user-token of an
-   account with an active subscription, pasted in Settings, and stays
-   inert without one. Per-word output (Enhanced/A2 LRC) is off by default
+   account with an active subscription. Either paste one, or sign in to
+   Apple from Settings and Beetdrop mints it for you (SRP + 2FA). The
+   Apple ID password is used only for the sign-in exchange - never
+   stored, never logged, and never sent to Apple, since SRP proves you
+   know it without transmitting it; only the session cookies persist
+   (0600, in /config) so the token can be renewed later. Apple stays
+   inert until a token is set. Per-word output (Enhanced/A2 LRC) is off by default
    because Plex, Navidrome, Jellyfin and Kodi are line-level and would
    show the inline tags as text - enable it with BEETDROP_WORD_LYRICS or
    in Settings if your player understands A2. Best effort, and toggleable

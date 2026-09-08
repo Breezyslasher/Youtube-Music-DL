@@ -24,6 +24,11 @@ createApp({
       testingApple: false,
       appleStatus: "",
       appleOk: false,
+      appleId: "",
+      applePassword: "",
+      appleCode: "",
+      appleFlowId: "",
+      signingInApple: false,
 
       jobs: [],
       queueOpen: false,
@@ -350,6 +355,70 @@ createApp({
           : "Scan failed: " + err.message);
       } finally {
         this.scanningLyrics = false;
+      }
+    },
+
+    async appleSignIn() {
+      this.signingInApple = true;
+      this.appleStatus = "";
+      try {
+        const body = await this.api("/api/apple/signin", {
+          method: "POST",
+          body: JSON.stringify({
+            apple_id: this.appleId, password: this.applePassword,
+          }),
+        });
+        // Not needed past this point, so drop it immediately.
+        this.applePassword = "";
+        if (body.status === "needs_2fa") {
+          this.appleFlowId = body.flow_id;
+          this.appleStatus = body.detail || "Enter the code Apple sent you";
+          return;
+        }
+        this.appleFlowId = "";
+        this.appleOk = body.status === "ok";
+        this.appleStatus = body.detail || "Signed in";
+        this.settings = await this.api("/api/settings");
+      } catch (err) {
+        this.applePassword = "";
+        if (err.message === "password required") return;
+        this.appleOk = false;
+        this.appleStatus = err.message;
+      } finally {
+        this.signingInApple = false;
+      }
+    },
+
+    async appleVerify() {
+      this.signingInApple = true;
+      try {
+        const body = await this.api("/api/apple/verify", {
+          method: "POST",
+          body: JSON.stringify({ flow_id: this.appleFlowId, code: this.appleCode }),
+        });
+        this.appleCode = "";
+        this.appleFlowId = "";
+        this.appleOk = body.status === "ok";
+        this.appleStatus = body.detail || "Signed in";
+        this.settings = await this.api("/api/settings");
+      } catch (err) {
+        if (err.message === "password required") return;
+        this.appleOk = false;
+        this.appleStatus = err.message;
+      } finally {
+        this.signingInApple = false;
+      }
+    },
+
+    async appleSignOut() {
+      try {
+        const body = await this.api("/api/apple/signout", { method: "POST" });
+        this.appleFlowId = "";
+        this.appleOk = false;
+        this.appleStatus = body.detail || "Signed out";
+        this.settings = await this.api("/api/settings");
+      } catch (err) {
+        if (err.message !== "password required") this.appleStatus = err.message;
       }
     },
 
