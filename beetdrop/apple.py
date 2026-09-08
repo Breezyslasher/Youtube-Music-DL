@@ -63,6 +63,20 @@ class AppleError(RuntimeError):
     pass
 
 
+class AppleUnavailable(AppleError):
+    """Apple could not answer; a later run may still succeed.
+
+    Raised for a dead connection, an exhausted 429 backoff, a token still
+    refused after a refresh, and Apple's own 5xx - none of which mean the
+    track has no lyrics, which is what returning None would say.
+    """
+
+
+# Statuses that mean "ask again later". A 404 is not one: it is Apple
+# saying it has no lyrics for this song, which is a real answer.
+UNAVAILABLE_STATUS = (0, 401, 403, 408, 425, 429, 500, 502, 503, 504)
+
+
 def _headers(developer_token: str, media_user_token: str) -> dict:
     return {
         "Authorization": "Bearer " + developer_token,
@@ -193,10 +207,12 @@ def search_song(developer_token: str, media_user_token: str, storefront: str,
                 artist: str, title: str,
                 duration_seconds: Optional[int] = None) -> Optional[str]:
     """The catalog id of the best match, or None."""
-    data, _, _ = _get_json_auth(
+    data, status, _ = _get_json_auth(
         SEARCH_URL % storefront, developer_token, media_user_token,
         {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
          "limit": "5"})
+    if status in UNAVAILABLE_STATUS:
+        raise AppleUnavailable("catalog search failed (status %s)" % status)
     if not data:
         return None
     try:
@@ -223,8 +239,10 @@ def search_song(developer_token: str, media_user_token: str, storefront: str,
 
 def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
                song_id: str) -> Optional[str]:
-    data, _, _ = _get_json_auth(LYRICS_URL % (storefront, song_id),
-                                developer_token, media_user_token)
+    data, status, _ = _get_json_auth(LYRICS_URL % (storefront, song_id),
+                                     developer_token, media_user_token)
+    if status in UNAVAILABLE_STATUS:
+        raise AppleUnavailable("lyrics fetch failed (status %s)" % status)
     if not data:
         return None
     try:
@@ -398,14 +416,16 @@ def fetch_synced(media_user_token: str, artist: str, title: str,
                  duration_seconds: Optional[int] = None,
                  storefront: str = "us",
                  word_by_word: bool = False) -> Optional[str]:
-    """The LRC for this track from Apple Music, or None. Never raises - a
-    miss is a normal outcome."""
+    """The LRC for this track from Apple Music, or None when Apple has
+    none for it. Raises AppleUnavailable when Apple could not be asked -
+    a miss is a normal outcome, an unreachable service is not."""
     if not media_user_token or not artist or not title:
         return None
     try:
         developer_token = fetch_developer_token()
-    except AppleError:
-        return None
+    except AppleError as exc:
+        # No token means Apple was never asked, not that it had nothing.
+        raise AppleUnavailable(str(exc)) from exc
     song_id = search_song(developer_token, media_user_token, storefront,
                           artist, title, duration_seconds)
     if not song_id:

@@ -19,6 +19,18 @@ from typing import Optional
 
 import requests
 
+
+class MusixmatchUnavailable(RuntimeError):
+    """Musixmatch could not be reached; a later run may still succeed.
+
+    Distinct from returning None, which means Musixmatch answered and has
+    no synced lyrics for this track.
+    """
+
+
+# "Ask again later" rather than "this track has no lyrics".
+RETRYABLE_STATUS = (408, 425, 429, 500, 502, 503, 504)
+
 APP_ID = "web-desktop-app-v1.0"
 TOKEN_URL = "https://apic-desktop.musixmatch.com/ws/1.1/token.get"
 SUBTITLES_URL = "https://apic-desktop.musixmatch.com/ws/1.1/macro.subtitles.get"
@@ -84,10 +96,15 @@ def _query(params: dict) -> Optional[str]:
     try:
         response = requests.get(SUBTITLES_URL, params=params,
                                 headers={"User-Agent": UA}, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        raise MusixmatchUnavailable("could not reach Musixmatch: %s" % exc) from exc
+    if response.status_code in RETRYABLE_STATUS:
+        raise MusixmatchUnavailable("Musixmatch returned %s" % response.status_code)
+    try:
         if not response.ok:
             return None
         data = response.json()
-    except (requests.RequestException, ValueError):
+    except ValueError:
         return None
     body = _find_subtitle_body(data)
     if body and _LRC_TIMESTAMP.search(body):

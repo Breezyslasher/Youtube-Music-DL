@@ -146,10 +146,16 @@ def cmd_scan_lyrics(args, config: Config) -> int:
         print("done: upgraded %d of %d line-level tracks to word-by-word "
               "(%d had no word-level version)" % (
                   result.upgraded, result.total, result.no_match))
-        return 0
-    print("done: added lyrics to %d of %d tracks missing them "
-          "(%d no match, %d skipped)" % (
-              result.added, result.total, result.no_match, result.skipped))
+    else:
+        print("done: added lyrics to %d of %d tracks missing them "
+              "(%d no match, %d skipped)" % (
+                  result.added, result.total, result.no_match, result.skipped))
+    if result.deferred:
+        # Not a miss: these were never answered, so the run is incomplete
+        # and saying "done" without this would be a lie.
+        print("%d track(s) could not be checked (rate limit, token, or "
+              "network) - run the pass again to retry them" % result.deferred)
+        return 2
     return 0
 
 

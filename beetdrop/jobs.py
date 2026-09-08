@@ -196,6 +196,12 @@ class JobManager:
                         extras.append("%d skipped (no title/artist)" % result.skipped)
                     if extras:
                         detail += " (" + ", ".join(extras) + ")"
+                if result.deferred:
+                    # These were never answered, so the pass is incomplete.
+                    # Reporting a plain "done" would hide a bad run.
+                    detail += ("; %d could not be checked (rate limit, token, "
+                               "or network) - run it again to retry them"
+                               % result.deferred)
                 self._update(job_id, stage="done", progress=100.0,
                              detail=detail[:2000], log=collector.text()[:20000])
                 return

@@ -12,9 +12,12 @@ from beetdrop.musixmatch import MusixmatchError
 
 
 class FakeResp:
-    def __init__(self, data=None, ok=True):
+    # Carries a status_code like a real Response: fetch_synced now
+    # distinguishes "Musixmatch has nothing" from "Musixmatch is down".
+    def __init__(self, data=None, ok=True, status=None):
         self._data = data if data is not None else {}
         self.ok = ok
+        self.status_code = status if status is not None else (200 if ok else 404)
 
     def json(self):
         return self._data
