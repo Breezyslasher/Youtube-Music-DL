@@ -294,7 +294,9 @@ def cmd_apple_raw(args, config: Config) -> int:
     """
     import requests
 
-    from . import apple
+    from . import __version__, apple
+
+    print("beetdrop %s" % __version__)
 
     def show(label: str, response) -> None:
         print("\n=== %s ===" % label)
@@ -566,6 +568,63 @@ def cmd_verify_skip(args, config: Config) -> int:
     return 3
 
 
+def cmd_apple_tokens(args, config: Config) -> int:
+    """Show every developer token the web player offers and which the
+    catalog API accepts.
+
+    The web player ships several JWTs for different Apple services. Only
+    one works against the catalog API, and the others are refused with
+    429 "Request is forbidden" - which reads as a rate limit and is not
+    one. This says plainly which is which, from this machine, so a wrong
+    token and a genuinely limited address can be told apart.
+    """
+    import base64
+    import json
+
+    from . import __version__, apple
+
+    print("beetdrop %s" % __version__)
+    try:
+        candidates = apple._candidate_tokens()
+    except apple.AppleError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    if not candidates:
+        print("no developer token found in the web player at all")
+        return 1
+    print("found %d distinct token(s)\n" % len(candidates))
+
+    working = []
+    for index, token in enumerate(candidates, 1):
+        payload = {}
+        try:
+            middle = token.split(".")[1]
+            middle += "=" * (-len(middle) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(middle))
+        except Exception:
+            pass
+        print("--- token %d of %d ---" % (index, len(candidates)))
+        print("    %s...%s" % (token[:18], token[-8:]))
+        for field in ("iss", "exp", "root_https_origin"):
+            if field in payload:
+                print("    %-18s %s" % (field, payload[field]))
+        ok = apple._token_works(token)
+        print("    catalog search     %s" % ("ACCEPTED" if ok else "refused"))
+        if ok:
+            working.append(index)
+        print()
+
+    if working:
+        print("%d of %d accepted (token %s). Beetdrop will use one of these."
+              % (len(working), len(candidates),
+                 ", ".join(str(i) for i in working)))
+        return 0
+    print("Every token was refused from this machine. Since a token that "
+          "works elsewhere is refused here, this really is the address "
+          "being limited rather than the wrong token being sent.")
+    return 2
+
+
 def cmd_serve(args, config: Config) -> int:
     import uvicorn
 
@@ -664,6 +723,12 @@ def main(argv=None) -> int:
     p_verify.add_argument("--sample", type=int, default=30,
                           help="how many flagged tracks to verify (default 30)")
     p_verify.set_defaults(func=cmd_verify_skip)
+
+    p_tokens = sub.add_parser(
+        "apple-tokens",
+        help="list the developer tokens the web player offers and show "
+             "which the catalog API accepts")
+    p_tokens.set_defaults(func=cmd_apple_tokens)
 
     p_serve = sub.add_parser("serve", help="run the web API")
     p_serve.add_argument("--host", default="0.0.0.0")
