@@ -327,12 +327,20 @@ def _get_json_auth(url, developer_token: str, media_user_token: str,
     return data, status, fresh
 
 
-def search_song(developer_token: str, media_user_token: str, storefront: str,
-                artist: str, title: str,
-                duration_seconds: Optional[int] = None) -> Optional[str]:
-    """The catalog id of the best match, or None."""
+def search_song_row(developer_token: str, storefront: str, artist: str,
+                    title: str, duration_seconds: Optional[int] = None):
+    """The best-matching catalog song, as Apple returned it, or None.
+
+    Deliberately anonymous - no media-user-token. Catalog search is
+    public data and answers perfectly well without one, and Apple's rate
+    limit is attached to the account rather than the address: a signed-in
+    search and an anonymous one, same second and same address, came back
+    429 and 200 respectively. Searching anonymously therefore spends none
+    of the account's allowance, leaving all of it for the lyrics call
+    that genuinely needs the subscription.
+    """
     data, status, _ = _get_json_auth(
-        SEARCH_URL % storefront, developer_token, media_user_token,
+        SEARCH_URL % storefront, developer_token, "",
         {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
          "limit": "5"})
     if status in UNAVAILABLE_STATUS:
@@ -354,11 +362,39 @@ def search_song(developer_token: str, media_user_token: str, storefront: str,
         else:
             delta = float("inf")
         if best is None or delta < best_delta:
-            best, best_delta = song.get("id"), delta
+            best, best_delta = song, delta
     # Nothing agreed on duration: fall back to Apple's own ranking.
     if best is None and songs and not duration_seconds:
-        best = songs[0].get("id")
+        best = songs[0]
     return best
+
+
+def has_synced_lyrics(song) -> Optional[bool]:
+    """Whether Apple says this song has time-synced lyrics.
+
+    The search response carries hasLyrics and hasTimeSyncedLyrics without
+    being asked, so a track Apple has no synced lyrics for can be dropped
+    before spending the second request on it. None when Apple did not say
+    - absence is not a no, so the caller should still ask.
+    """
+    attributes = (song or {}).get("attributes") or {}
+    if "hasTimeSyncedLyrics" in attributes:
+        return bool(attributes["hasTimeSyncedLyrics"])
+    if attributes.get("hasLyrics") is False:
+        return False
+    return None
+
+
+def search_song(developer_token: str, media_user_token: str, storefront: str,
+                artist: str, title: str,
+                duration_seconds: Optional[int] = None) -> Optional[str]:
+    """The catalog id of the best match, or None.
+
+    media_user_token is accepted and ignored: the search needs no account.
+    """
+    best = search_song_row(developer_token, storefront, artist, title,
+                           duration_seconds)
+    return (best or {}).get("id")
 
 
 def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
@@ -572,9 +608,15 @@ def fetch_synced(media_user_token: str, artist: str, title: str,
     except AppleError as exc:
         # No token means Apple was never asked, not that it had nothing.
         raise AppleUnavailable(str(exc)) from exc
-    song_id = search_song(developer_token, media_user_token, storefront,
-                          artist, title, duration_seconds)
+    song = search_song_row(developer_token, storefront, artist, title,
+                           duration_seconds)
+    song_id = (song or {}).get("id")
     if not song_id:
+        return None
+    # The search already said whether synced lyrics exist, so a track
+    # without them costs one request instead of two - and, more to the
+    # point, spends none of the account's rate limit on a certain miss.
+    if has_synced_lyrics(song) is False:
         return None
     ttml = fetch_ttml(developer_token, media_user_token, storefront, song_id)
     if not ttml:

@@ -872,3 +872,92 @@ class TestChainSkipsAppleButKeepsGoing:
         apple.hold_off(60.0)
         with pytest.raises(lyrics_module.LyricsUnavailable):
             lyrics_module.fetch_synced_lyrics("A", "S", apple_token="t")
+
+
+class TestSearchNeedsNoAccount:
+    """Proven against the live API: the same catalog search, same second
+    and same address, came back 429 with the media-user-token and 200
+    without it. Apple's limit is on the account, so searching anonymously
+    spends none of it and leaves the whole allowance for the lyrics call
+    that genuinely needs a subscription."""
+
+    SONG = {"id": "1369380479",
+            "attributes": {"durationInMillis": 200187, "name": "lovely",
+                           "hasLyrics": True, "hasTimeSyncedLyrics": True}}
+
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def test_the_search_sends_no_media_user_token(self, monkeypatch):
+        seen = {}
+
+        def fake_get(url, headers=None, params=None, **kw):
+            seen.update(headers or {})
+            return FakeResp({"results": {"songs": {"data": [self.SONG]}}})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+
+        apple.search_song("dev", "mut-should-not-be-sent", "us", "A", "S", 200)
+        assert seen.get("Authorization") == "Bearer dev"
+        assert not seen.get("Media-User-Token")
+
+    def test_the_lyrics_call_still_sends_it(self, monkeypatch):
+        sent = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            sent.append(((headers or {}).get("Media-User-Token"), url))
+            if "/search" in url:
+                return FakeResp({"results": {"songs": {"data": [self.SONG]}}})
+            return FakeResp({"data": [{"attributes": {"ttml": WORD_TTML}}]})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+
+        apple.fetch_synced("mut", "Billie Eilish", "lovely", 200)
+        search = [t for t, url in sent if "/search" in url or True][0]
+        assert search in ("", None)                      # search: anonymous
+        assert any(token == "mut" for token, url in sent
+                   if "syllable-lyrics" in url)          # lyrics: signed in
+
+
+class TestSkipTracksAppleSaysHaveNoSyncedLyrics:
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def _run(self, monkeypatch, attributes):
+        calls = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            calls.append(url)
+            if "/search" in url:
+                return FakeResp({"results": {"songs": {"data": [
+                    {"id": "1", "attributes": attributes}]}}})
+            return FakeResp({"data": [{"attributes": {"ttml": WORD_TTML}}]})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        result = apple.fetch_synced("mut", "A", "S", 200)
+        return result, calls
+
+    def test_no_synced_lyrics_costs_one_request_not_two(self, monkeypatch):
+        result, calls = self._run(monkeypatch, {
+            "durationInMillis": 200000, "hasLyrics": True,
+            "hasTimeSyncedLyrics": False})
+        assert result is None
+        assert not any("syllable-lyrics" in url for url in calls)
+
+    def test_no_lyrics_at_all_is_also_skipped(self, monkeypatch):
+        result, calls = self._run(monkeypatch, {
+            "durationInMillis": 200000, "hasLyrics": False})
+        assert result is None
+        assert not any("syllable-lyrics" in url for url in calls)
+
+    def test_synced_lyrics_are_still_fetched(self, monkeypatch):
+        result, calls = self._run(monkeypatch, {
+            "durationInMillis": 200000, "hasTimeSyncedLyrics": True})
+        assert result and any("syllable-lyrics" in url for url in calls)
+
+    def test_apple_saying_nothing_is_not_taken_as_no(self, monkeypatch):
+        """Absence of the flag must not silently skip a track that has
+        lyrics; only an explicit false may."""
+        result, calls = self._run(monkeypatch, {"durationInMillis": 200000})
+        assert result and any("syllable-lyrics" in url for url in calls)
