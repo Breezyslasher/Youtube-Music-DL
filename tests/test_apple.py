@@ -336,3 +336,70 @@ class TestHasWordTiming:
     ])
     def test_detection(self, lrc, expected):
         assert lyrics_module.has_word_timing(lrc) is expected
+
+
+class TestLyricsProbe:
+    """The diagnostic that says whether a track is line-level because
+    Apple lacks word timing, or because Apple was never reached."""
+
+    def _run(self, capsys, config, **patches):
+        from beetdrop.__main__ import cmd_lyrics_probe
+
+        class Args:
+            artist = "5 Seconds of Summer"
+            title = "Social Casualty"
+            duration = 189
+        rc = cmd_lyrics_probe(Args(), config)
+        return rc, capsys.readouterr().out
+
+    def test_reports_apple_never_asked_without_a_token(self, tmp_path, capsys,
+                                                       monkeypatch):
+        music = tmp_path / "music"
+        music.mkdir()
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        monkeypatch.setattr(lyrics_module, "_lrclib", lambda *a: None)
+        monkeypatch.setattr(lyrics_module, "_musixmatch", lambda *a: None)
+        rc, out = self._run(capsys, config)
+        assert rc == 0
+        assert "Apple is never asked" in out
+        assert "nothing - no source had synced lyrics" in out
+
+    def test_reports_word_level_when_apple_has_it(self, tmp_path, capsys,
+                                                  monkeypatch):
+        music = tmp_path / "music"
+        music.mkdir()
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="tok",
+                        word_lyrics=True)
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda force=False: "dev")
+        monkeypatch.setattr(apple, "_get_json", lambda *a, **k: (
+            {"results": {"songs": {"data": [
+                {"id": "1", "attributes": {"name": "Social Casualty",
+                                           "artistName": "5 Seconds of Summer",
+                                           "durationInMillis": 189000}}]}}}, 200))
+        monkeypatch.setattr(apple, "fetch_ttml", lambda *a, **k: WORD_TTML)
+        monkeypatch.setattr(lyrics_module, "_lrclib", lambda *a: None)
+        monkeypatch.setattr(lyrics_module, "_musixmatch", lambda *a: None)
+        rc, out = self._run(capsys, config)
+        assert rc == 0
+        assert "WORD (Apple has word-by-word)" in out
+        assert "WORD-BY-WORD" in out
+
+    def test_explains_a_duration_miss(self, tmp_path, capsys, monkeypatch):
+        music = tmp_path / "music"
+        music.mkdir()
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="tok")
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda force=False: "dev")
+        # The only candidate is a minute longer: a different recording.
+        monkeypatch.setattr(apple, "_get_json", lambda *a, **k: (
+            {"results": {"songs": {"data": [
+                {"id": "1", "attributes": {"name": "Social Casualty (Live)",
+                                           "artistName": "5SOS",
+                                           "durationInMillis": 249000}}]}}}, 200))
+        monkeypatch.setattr(lyrics_module, "_lrclib", lambda *a: None)
+        monkeypatch.setattr(lyrics_module, "_musixmatch", lambda *a: None)
+        rc, out = self._run(capsys, config)
+        assert "duration tolerance" in out
+        assert "+60.0s vs your file" in out

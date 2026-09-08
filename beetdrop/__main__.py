@@ -132,6 +132,88 @@ def cmd_scan_lyrics(args, config: Config) -> int:
     return 0
 
 
+def cmd_lyrics_probe(args, config: Config) -> int:
+    """Explain, for one track, what each lyric source actually returns.
+
+    Answers the question the scan cannot: is a track line-level because
+    Apple has no word timing for it, or because Apple was never reached?
+    """
+    from . import apple
+    from .lyrics import _lrclib, _musixmatch, fetch_synced_lyrics, has_word_timing
+
+    artist, title = args.artist, args.title
+    duration = args.duration
+    print("query: artist=%r title=%r duration=%s" % (artist, title, duration))
+    print("settings: provider=%s word_by_word=%s apple_token=%s" % (
+        config.lyrics_provider, config.word_lyrics,
+        "set" if config.apple_token else "NOT SET"))
+
+    print("\n-- Apple --")
+    if not config.apple_token:
+        print("  no media-user-token configured, so Apple is never asked")
+    else:
+        try:
+            developer = apple.fetch_developer_token()
+            storefront = config.apple_storefront or "us"
+            found, _ = apple._get_json(
+                apple.SEARCH_URL % storefront,
+                apple._headers(developer, config.apple_token),
+                {"term": ("%s %s" % (artist, title)).strip(),
+                 "types": "songs", "limit": "5"})
+            songs = (((found or {}).get("results") or {}).get("songs") or {}).get("data") or []
+            if not songs:
+                print("  catalog search found nothing")
+            for song in songs:
+                attributes = song.get("attributes") or {}
+                seconds = (attributes.get("durationInMillis") or 0) / 1000.0
+                delta = ("%+.1fs" % (seconds - duration)) if duration else "n/a"
+                print("  candidate: %-38r by %-24r %5.1fs (%s vs your file)" % (
+                    attributes.get("name"), attributes.get("artistName"),
+                    seconds, delta))
+            chosen = apple.search_song(developer, config.apple_token, storefront,
+                                       artist, title, duration)
+            if not chosen:
+                print("  CHOSEN: none - every candidate was outside the %ds "
+                      "duration tolerance" % apple.DURATION_TOLERANCE)
+            else:
+                print("  CHOSEN: id %s" % chosen)
+                ttml = apple.fetch_ttml(developer, config.apple_token,
+                                        storefront, chosen)
+                if not ttml:
+                    print("  lyrics: none for that id")
+                else:
+                    print("  lyrics: timing=%s" % (
+                        "WORD (Apple has word-by-word)" if apple.is_word_level(ttml)
+                        else "Line (Apple has no word timing for this track)"))
+        except Exception as exc:
+            print("  error: %s: %s" % (type(exc).__name__, exc))
+
+    print("\n-- other sources --")
+    lrclib = _lrclib(artist, title, "", duration)
+    print("  lrclib:     %s" % ("hit (line-level)" if lrclib else "no match"))
+    mxm = _musixmatch(artist, title, "", duration, config.musixmatch_token)
+    print("  musixmatch: %s" % (
+        "hit (line-level)" if mxm else
+        "no match" if config.musixmatch_token else "no token configured"))
+
+    print("\n-- what Beetdrop would write, with your current settings --")
+    final = fetch_synced_lyrics(
+        artist, title, "", duration,
+        musixmatch_token=config.musixmatch_token,
+        provider=config.lyrics_provider,
+        apple_token=config.apple_token,
+        apple_storefront=config.apple_storefront,
+        word_by_word=config.word_lyrics)
+    if not final:
+        print("  nothing - no source had synced lyrics")
+    else:
+        kind = "WORD-BY-WORD" if has_word_timing(final) else "line-level"
+        print("  %s, %d lines" % (kind, len(final.splitlines())))
+        for line in final.splitlines()[:3]:
+            print("    %s" % line[:110])
+    return 0
+
+
 def cmd_serve(args, config: Config) -> int:
     import uvicorn
 
@@ -179,6 +261,17 @@ def main(argv=None) -> int:
                         help="re-fetch tracks whose .lrc has no per-word timing "
                              "and replace it when Apple has a word-level version")
     p_scan.set_defaults(func=cmd_scan_lyrics)
+
+    p_probe = sub.add_parser(
+        "lyrics-probe",
+        help="show what each lyric source returns for one track, and whether "
+             "Apple has word-by-word for it")
+    p_probe.add_argument("artist")
+    p_probe.add_argument("title")
+    p_probe.add_argument("--duration", type=int, default=0,
+                         help="track length in seconds; Apple matches within "
+                              "8s, so passing it explains a missed match")
+    p_probe.set_defaults(func=cmd_lyrics_probe)
 
     p_serve = sub.add_parser("serve", help="run the web API")
     p_serve.add_argument("--host", default="0.0.0.0")
