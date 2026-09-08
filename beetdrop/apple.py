@@ -53,6 +53,10 @@ _TTM_ROLE = "{http://www.w3.org/ns/ttml#metadata}role"
 _DEV_TOKEN_TTL = 6 * 3600
 _dev_token = {"value": "", "at": 0.0}
 _dev_lock = threading.Lock()
+# Rescraping the web player is expensive, so a rejected token is replaced
+# at most this often however many tracks hit the rejection.
+_REFRESH_COOLDOWN = 300.0
+_last_refresh = 0.0
 
 
 class AppleError(RuntimeError):
@@ -140,12 +144,57 @@ def _get_json(url, headers, params=None):
         return None, 200
 
 
+def _refresh_developer_token(stale: str) -> str:
+    """A replacement for a developer token Apple has just rejected.
+
+    Scraping the web player costs up to thirteen requests, and a scan
+    calls this from every track, so it must not become a scrape per
+    track. Two guards: if the cache already holds a different token some
+    other call refreshed it, and a refresh that happened moments ago is
+    not repeated - a 401 that survives a fresh token is the
+    media-user-token being bad, which no amount of rescraping fixes.
+    """
+    global _last_refresh
+    with _dev_lock:
+        current = _dev_token["value"]
+        if current and current != stale:
+            return current
+        if time.time() - _last_refresh < _REFRESH_COOLDOWN:
+            return current
+        _last_refresh = time.time()
+    try:
+        return fetch_developer_token(force=True)
+    except AppleError:
+        return ""
+
+
+def _get_json_auth(url, developer_token: str, media_user_token: str,
+                   params=None):
+    """A catalog GET that survives the developer token rotating mid-scan.
+
+    The token is cached for six hours but Apple rotates it on its own
+    schedule, and a scan runs for longer than that. Without this, the
+    moment it turns over every remaining track gets a 401 and is recorded
+    as having no lyrics - a run that quietly goes empty half way through
+    and still reports success.
+    """
+    data, status = _get_json(url, _headers(developer_token, media_user_token),
+                             params)
+    if status not in (401, 403):
+        return data, status, developer_token
+    fresh = _refresh_developer_token(developer_token)
+    if not fresh or fresh == developer_token:
+        return data, status, developer_token
+    data, status = _get_json(url, _headers(fresh, media_user_token), params)
+    return data, status, fresh
+
+
 def search_song(developer_token: str, media_user_token: str, storefront: str,
                 artist: str, title: str,
                 duration_seconds: Optional[int] = None) -> Optional[str]:
     """The catalog id of the best match, or None."""
-    data, _ = _get_json(
-        SEARCH_URL % storefront, _headers(developer_token, media_user_token),
+    data, _, _ = _get_json_auth(
+        SEARCH_URL % storefront, developer_token, media_user_token,
         {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
          "limit": "5"})
     if not data:
@@ -174,8 +223,8 @@ def search_song(developer_token: str, media_user_token: str, storefront: str,
 
 def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
                song_id: str) -> Optional[str]:
-    data, _ = _get_json(LYRICS_URL % (storefront, song_id),
-                        _headers(developer_token, media_user_token))
+    data, _, _ = _get_json_auth(LYRICS_URL % (storefront, song_id),
+                                developer_token, media_user_token)
     if not data:
         return None
     try:
