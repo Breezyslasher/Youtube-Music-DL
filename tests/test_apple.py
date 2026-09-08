@@ -874,23 +874,22 @@ class TestChainSkipsAppleButKeepsGoing:
             lyrics_module.fetch_synced_lyrics("A", "S", apple_token="t")
 
 
-class TestSearchNeedsNoAccount:
-    """Proven against the live API: the same catalog search, same second
-    and same address, came back 429 with the media-user-token and 200
-    without it. Apple's limit is on the account, so searching anonymously
-    spends none of it and leaves the whole allowance for the lyrics call
-    that genuinely needs a subscription."""
+class TestWhoNeedsTheAccount:
+    """A plain catalog search needs no account - proven live, where the
+    same search returned 200 anonymously. A search that also asks for
+    lyrics does need one, because lyrics are subscriber-gated. So the
+    lookup used by the estimator stays anonymous, while the combined
+    one-request fetch carries the token."""
 
     SONG = {"id": "1369380479",
-            "attributes": {"durationInMillis": 200187, "name": "lovely",
-                           "hasLyrics": True, "hasTimeSyncedLyrics": True}}
+            "attributes": {"durationInMillis": 200187, "name": "lovely"}}
 
     def setup_method(self):
         apple._dev_token["value"] = "devtok"
         apple._dev_token["at"] = 9e18
         apple._throttle_until = 0.0
 
-    def test_the_search_sends_no_media_user_token(self, monkeypatch):
+    def test_a_plain_lookup_sends_no_account_token(self, monkeypatch):
         seen = {}
 
         def fake_get(url, headers=None, params=None, **kw):
@@ -902,21 +901,21 @@ class TestSearchNeedsNoAccount:
         assert seen.get("Authorization") == "Bearer dev"
         assert not seen.get("Media-User-Token")
 
-    def test_the_lyrics_call_still_sends_it(self, monkeypatch):
+    def test_the_combined_fetch_does_send_it(self, monkeypatch):
+        """Lyrics are subscriber-gated, so the search that carries them
+        has to be signed in - one signed-in request rather than an
+        anonymous one plus a signed-in one."""
         sent = []
 
         def fake_get(url, headers=None, params=None, **kw):
-            sent.append(((headers or {}).get("Media-User-Token"), url))
-            if "/search" in url:
-                return FakeResp({"results": {"songs": {"data": [self.SONG]}}})
-            return FakeResp({"data": [{"attributes": {"ttml": WORD_TTML}}]})
+            sent.append((headers or {}).get("Media-User-Token"))
+            return FakeResp({"results": {"songs": {"data": [dict(
+                self.SONG, relationships={"syllable-lyrics": {"data": [
+                    {"attributes": {"ttml": WORD_TTML}}]}})]}}})
         monkeypatch.setattr(apple.requests, "get", fake_get)
 
-        apple.fetch_synced("mut", "Billie Eilish", "lovely", 200)
-        search = [t for t, url in sent if "/search" in url or True][0]
-        assert search in ("", None)                      # search: anonymous
-        assert any(token == "mut" for token, url in sent
-                   if "syllable-lyrics" in url)          # lyrics: signed in
+        assert apple.fetch_synced("mut", "Billie Eilish", "lovely", 200)
+        assert sent == ["mut"]        # exactly one request, signed in
 
 
 class TestNoShortcutOnTheLyricsFlag:
@@ -1020,3 +1019,59 @@ class TestTokenIsValidatedNotGuessed:
             apple.fetch_developer_token()
         # Not reported as a rate limit, which is what sent us wrong.
         assert "refused every one" in str(caught.value)
+
+
+class TestOneRequestPerTrack:
+    """Apple attaches lyrics to a search result, so the two calls a track
+    used to cost - search for an id, then fetch by that id - become one.
+    Confirmed against the live API: include[songs]=syllable-lyrics carried
+    the lyrics, while plain include= returned 200 and carried nothing."""
+
+    SONG = {"id": "1", "attributes": {"durationInMillis": 200000},
+            "relationships": {"syllable-lyrics": {"data": [
+                {"attributes": {"ttml": WORD_TTML}}]}}}
+
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def _run(self, monkeypatch, song):
+        calls = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            calls.append((url, dict(params or {})))
+            if "/search" in url:
+                return FakeResp({"results": {"songs": {"data": [song]}}})
+            return FakeResp({"data": [{"attributes": {"ttml": LINE_TTML}}]})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        return apple.fetch_synced("mut", "A", "S", 200,
+                                  word_by_word=True), calls
+
+    def test_a_hit_costs_one_request(self, monkeypatch):
+        lrc, calls = self._run(monkeypatch, self.SONG)
+        assert lrc.startswith("[00:20.78]<00:20.78>Thought")
+        assert len(calls) == 1
+        assert not any("syllable-lyrics" in url for url, _ in calls)
+
+    def test_the_bracketed_include_is_what_is_sent(self, monkeypatch):
+        _, calls = self._run(monkeypatch, self.SONG)
+        params = calls[0][1]
+        assert params.get("include[songs]") == "syllable-lyrics"
+        # Plain include= is silently ignored by Apple, so it must not be
+        # what we rely on.
+        assert "include" not in params
+
+    def test_lyrics_not_carried_falls_back_rather_than_missing(self, monkeypatch):
+        """A search that does not attach them has not said the track has
+        none; recording a miss there would lose real lyrics."""
+        bare = {"id": "1", "attributes": {"durationInMillis": 200000}}
+        lrc, calls = self._run(monkeypatch, bare)
+        assert lrc == "[01:03.10]This nearly was mine"   # from the fallback
+        assert any("syllable-lyrics" in url for url, _ in calls)
+
+    def test_the_duration_check_still_applies(self, monkeypatch):
+        wrong = {"id": "1", "attributes": {"durationInMillis": 400000},
+                 "relationships": self.SONG["relationships"]}
+        lrc, _ = self._run(monkeypatch, wrong)
+        assert lrc is None      # a different recording, lyrics or not

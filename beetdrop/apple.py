@@ -393,8 +393,14 @@ def search_song_row(developer_token: str, storefront: str, artist: str,
         songs = data["results"]["songs"]["data"]
     except (KeyError, TypeError):
         return None
+    return _best_by_duration(songs, duration_seconds)
+
+
+def _best_by_duration(songs, duration_seconds: Optional[int]):
+    """The candidate closest to the file's length, or None when every one
+    is a different recording."""
     best, best_delta = None, None
-    for song in songs:
+    for song in songs or []:
         attributes = song.get("attributes") or {}
         millis = attributes.get("durationInMillis")
         if duration_seconds and millis:
@@ -437,6 +443,53 @@ def search_song(developer_token: str, media_user_token: str, storefront: str,
     best = search_song_row(developer_token, storefront, artist, title,
                            duration_seconds)
     return (best or {}).get("id")
+
+
+# Only the bracketed form works. Plain "include=syllable-lyrics" on a
+# search returns 200 and carries nothing, which would look like a track
+# with no lyrics rather than a parameter Apple ignored.
+SEARCH_INCLUDE = "include[songs]"
+
+
+def _ttml_of(song) -> Optional[str]:
+    """The lyrics carried alongside a search result, if any."""
+    relationships = (song or {}).get("relationships") or {}
+    for name in ("syllable-lyrics", "lyrics"):
+        for row in (relationships.get(name) or {}).get("data") or []:
+            ttml = (row.get("attributes") or {}).get("ttml")
+            if ttml:
+                return ttml
+    return None
+
+
+def search_with_lyrics(developer_token: str, media_user_token: str,
+                       storefront: str, artist: str, title: str,
+                       duration_seconds: Optional[int] = None):
+    """(song, ttml) for the best match, in a single request.
+
+    Apple will attach the lyrics to a search result, so the two calls a
+    track used to cost - search for an id, then fetch by that id - become
+    one. Over a few thousand tracks that is the difference between a scan
+    Apple tolerates and one it does not.
+
+    ttml comes back None when the search did not carry it, which is not
+    the same as the track having none: the caller should fall back to
+    fetching by id rather than record a miss.
+    """
+    data, status, _ = _get_json_auth(
+        SEARCH_URL % storefront, developer_token, media_user_token,
+        {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
+         "limit": "5", SEARCH_INCLUDE: "syllable-lyrics"})
+    if status in UNAVAILABLE_STATUS:
+        raise AppleUnavailable("catalog search failed (status %s)" % status)
+    if not data:
+        return None, None
+    try:
+        songs = data["results"]["songs"]["data"]
+    except (KeyError, TypeError):
+        return None, None
+    best = _best_by_duration(songs, duration_seconds)
+    return best, _ttml_of(best)
 
 
 def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
@@ -650,16 +703,18 @@ def fetch_synced(media_user_token: str, artist: str, title: str,
     except AppleError as exc:
         # No token means Apple was never asked, not that it had nothing.
         raise AppleUnavailable(str(exc)) from exc
-    song = search_song_row(developer_token, storefront, artist, title,
-                           duration_seconds)
+    # One request: the search carries the lyrics with it.
+    song, ttml = search_with_lyrics(developer_token, media_user_token,
+                                    storefront, artist, title, duration_seconds)
     song_id = (song or {}).get("id")
     if not song_id:
         return None
-    # No shortcut here. hasTimeSyncedLyrics looked like a free way to skip
-    # the second request, but measured against a real library it was wrong
-    # 9 times in 17: Apple flags a track as having no synced lyrics on an
-    # anonymous search and then serves them when asked. A saved request is
-    # not worth silently dropping lyrics we would otherwise have.
+    if ttml:
+        return ttml_to_lrc(ttml, word_by_word=word_by_word)
+    # Apple did not attach them this time. That is not "no lyrics", so ask
+    # by id rather than record a miss - and no shortcut on the has-lyrics
+    # flag either: measured against a real library it was wrong 9 times in
+    # 17, flagging tracks as having none and then serving them when asked.
     ttml = fetch_ttml(developer_token, media_user_token, storefront, song_id)
     if not ttml:
         return None
