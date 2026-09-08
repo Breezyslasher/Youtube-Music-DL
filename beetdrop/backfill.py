@@ -16,12 +16,16 @@ from typing import Callable, Optional
 
 import mutagen
 
+from .cleaning import clean_title
 from .config import Config
 from .library import write_lyrics_sidecar
 from .lyrics import fetch_synced_lyrics, has_word_timing, looks_synthetic
+from .matching import normalize_artist
 
 # Leading track (and disc) number on a filename, e.g. "02 - ", "1-02 - ".
 _TRACK_PREFIX = re.compile(r"^(?:\d+-)?\d+\s*[-.]\s*")
+# Runs of whitespace, which junk tags are full of.
+_WHITESPACE = re.compile(r"\s+")
 # Trailing " (1999)" year on an album folder.
 _YEAR_SUFFIX = re.compile(r"\s*\((?:19|20)\d{2}\)\s*$")
 
@@ -110,6 +114,27 @@ def iter_audio_line_level_lyrics(root: Path):
             continue
         if not has_word_timing(text):
             yield path
+
+
+def tidy_track_name(title: str, artist: str) -> str:
+    """Make a usable track name out of whatever a tagger left behind.
+
+    Files from other downloaders often carry no artist tag and the whole
+    "Artist - Title (Audio)" string as the title. Searching a catalogue
+    with that finds nothing, so the YouTube noise is stripped and a
+    leading artist prefix removed - "5 Seconds of Summer - Social
+    Casualty (Audio)" becomes "Social Casualty".
+    """
+    cleaned = clean_title(title or "")
+    if artist:
+        # "<artist> - <track>" is the usual shape; compare loosely so
+        # spacing and case differences do not stop the strip.
+        head = re.match(r"^(.*?)\s+-\s+(.+)$", cleaned)
+        if head:
+            left, right = head.group(1), head.group(2)
+            if normalize_artist(left) == normalize_artist(artist):
+                cleaned = right
+    return _WHITESPACE.sub(" ", cleaned).strip() or (title or "").strip()
 
 
 def read_track_meta(path: Path):
@@ -210,6 +235,8 @@ def backfill_lyrics(
             artist = artist or p_artist
             title = title or p_title
             album = album or p_album
+        # Tag titles are not trustworthy on files other tools wrote.
+        title = tidy_track_name(title, artist)
         if not (artist and title):
             skipped += 1
         else:

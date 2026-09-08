@@ -360,3 +360,64 @@ class TestUpgradePass:
         result = backfill_lyrics(config)  # not an upgrade run
         assert result.total == 0
         assert track.with_suffix(".lrc").read_text() == LINE_LRC
+
+
+class TestTidyTrackName:
+    """Files from other downloaders carry no artist tag and the whole
+    "Artist - Title (Audio)" string as the title. Searching a catalogue
+    with that finds nothing."""
+
+    @pytest.mark.parametrize("title,artist,expected", [
+        ("5 Seconds of Summer  - Social Casualty (Audio)",
+         "5 Seconds of Summer", "Social Casualty"),
+        ("Adele - Hello", "Adele", "Hello"),
+        ("lovely (Official Video)", "Billie Eilish", "lovely"),
+        ("Social Casualty", "5 Seconds of Summer", "Social Casualty"),
+        ("This Nearly Was Mine", "Frank Sinatra", "This Nearly Was Mine"),
+    ])
+    def test_cleans_junk_titles(self, title, artist, expected):
+        assert backfill.tidy_track_name(title, artist) == expected
+
+    def test_keeps_a_real_qualifier(self):
+        # "- Live" is part of the recording's identity, not an artist prefix.
+        assert backfill.tidy_track_name("Live and Let Die - Live", "Wings") \
+            == "Live and Let Die - Live"
+
+    def test_does_not_strip_a_different_artist(self):
+        # Only the track's own artist is stripped, never a collaborator
+        # or a song whose title happens to contain a dash.
+        assert backfill.tidy_track_name("Nirvana - Something", "Adele") \
+            == "Nirvana - Something"
+
+    def test_empty_and_untidyable(self):
+        assert backfill.tidy_track_name("", "A") == ""
+        assert backfill.tidy_track_name("(Audio)", "A") == "(Audio)"
+
+
+@pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+class TestJunkTagsReachTheLookupClean:
+    def test_artist_is_not_duplicated_into_the_query(self, tmp_path, monkeypatch):
+        music = tmp_path / "music"
+        music.mkdir()
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        # Exactly the shape another downloader leaves: no artist tag, the
+        # whole "Artist - Title (Audio)" crammed into the title.
+        track = music / "5 Seconds of Summer" / "5 Seconds of Summer  - Social Casualty.opus"
+        make_opus(track)
+        write_full_tags(track, FullTags(
+            title="5 Seconds of Summer  - Social Casualty (Audio)", artist=""))
+
+        seen = {}
+
+        def fake(artist, title, album="", duration_seconds=None, **kwargs):
+            seen.update(artist=artist, title=title)
+            return "[00:01.00]la"
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        backfill_lyrics(config)
+        assert seen["artist"] == "5 Seconds of Summer"
+        assert seen["title"] == "Social Casualty"
+        # The artist must not appear twice in what a catalogue is asked for.
+        assert seen["title"].count("5 Seconds of Summer") == 0
