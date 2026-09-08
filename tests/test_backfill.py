@@ -1090,3 +1090,101 @@ class TestVerifySkipFlag:
         backfill.verify_skip_flag(config, sample=5)
         for lrc in (config.music_root / "A").glob("*.lrc"):
             assert lrc.read_text() == "[00:01.00]plain"
+
+
+class TestRefusedMatchesAreQueuedForReview:
+    """Once matching started turning candidates away, a track with no
+    lyrics could mean Apple had nothing or that we declined everything it
+    offered. Only the second is worth a person's attention, so only that
+    is queued - listing tracks with nothing to choose between would be
+    clicking through blanks."""
+
+    def _config(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        track = config.music_root / "A" / "song.opus"
+        track.write_bytes(b"x")
+        return config, track
+
+    def _run(self, tmp_path, monkeypatch, candidates=None, store=None):
+        config, track = self._config(tmp_path)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def fake(*a, **k):
+            if candidates and k.get("on_candidates"):
+                k["on_candidates"](candidates)
+            return None
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        return backfill_lyrics(config, store=store), track
+
+    def test_refused_candidates_are_queued(self, tmp_path, monkeypatch):
+        store = Store(tmp_path / "db.sqlite3")
+        refused = [{"id": "1", "title": "Song (Live)", "artist": "A",
+                    "reason": "a different performance"}]
+        result, track = self._run(tmp_path, monkeypatch, refused, store)
+        assert result.no_match == 1
+        assert store.count_reviews() == 1
+        row = store.list_reviews()[0]
+        assert row["path"] == str(track)
+        assert row["candidates"][0]["reason"] == "a different performance"
+
+    def test_a_track_apple_had_nothing_for_is_not_queued(self, tmp_path, monkeypatch):
+        store = Store(tmp_path / "db.sqlite3")
+        result, _ = self._run(tmp_path, monkeypatch, candidates=None, store=store)
+        assert result.no_match == 1
+        assert store.count_reviews() == 0     # nothing to choose between
+
+    def test_a_scan_without_a_store_still_works(self, tmp_path, monkeypatch):
+        result, _ = self._run(tmp_path, monkeypatch, [{"id": "1"}], store=None)
+        assert result.no_match == 1
+
+
+class TestAChoiceOutranksMatching:
+    """A decision is durable on purpose: a rescan must never quietly undo
+    it, and correcting a wrong automatic match has to stick."""
+
+    def _config(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        track = config.music_root / "A" / "song.opus"
+        track.write_bytes(b"x")
+        return config, track
+
+    def test_a_chosen_song_is_used_and_matching_is_skipped(self, tmp_path, monkeypatch):
+        config, track = self._config(tmp_path)
+        store = Store(tmp_path / "db.sqlite3")
+        store.set_choice(str(track), "1369380479")
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr(
+            backfill, "fetch_synced_lyrics",
+            lambda *a, **k: pytest.fail("matching ran despite a decision"))
+        asked = []
+        monkeypatch.setattr(backfill, "_lyrics_by_choice",
+                            lambda cfg, song_id, word_by_word=False:
+                            asked.append(song_id) or "[00:01.00]picked")
+
+        result = backfill_lyrics(config, store=store)
+        assert asked == ["1369380479"]
+        assert result.added == 1
+        assert track.with_suffix(".lrc").read_text() == "[00:01.00]picked"
+
+    def test_leave_alone_is_honoured(self, tmp_path, monkeypatch):
+        config, track = self._config(tmp_path)
+        store = Store(tmp_path / "db.sqlite3")
+        store.set_choice(str(track), "")      # "none of these"
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr(
+            backfill, "fetch_synced_lyrics",
+            lambda *a, **k: pytest.fail("looked up a track marked leave-alone"))
+
+        result = backfill_lyrics(config, store=store)
+        assert result.skipped == 1
+        assert not track.with_suffix(".lrc").exists()

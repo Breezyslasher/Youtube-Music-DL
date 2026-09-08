@@ -178,7 +178,7 @@ class JobManager:
                     "Library lyrics refresh" if purge else "Library lyrics scan"))
                 result = backfill_lyrics(config, on_progress=on_progress,
                                          on_detail=on_detail, purge_bad=purge,
-                                         upgrade=upgrade)
+                                         upgrade=upgrade, store=self._store)
                 if upgrade:
                     detail = "upgraded %d of %d line-level tracks to word-by-word" % (
                         result.upgraded, result.total)

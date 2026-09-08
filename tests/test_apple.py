@@ -1071,10 +1071,16 @@ class TestOneRequestPerTrack:
         assert any("syllable-lyrics" in url for url, _ in calls)
 
     def test_the_duration_check_still_applies(self, monkeypatch):
-        wrong = {"id": "1", "attributes": {"durationInMillis": 400000},
+        """Refusing every candidate is reported, not silently a miss: the
+        track may be in the catalogue under a length we would not accept,
+        and only a person can say."""
+        wrong = {"id": "1", "attributes": {"durationInMillis": 400000,
+                                           "name": "S", "artistName": "A"},
                  "relationships": self.SONG["relationships"]}
-        lrc, _ = self._run(monkeypatch, wrong)
-        assert lrc is None      # a different recording, lyrics or not
+        with pytest.raises(apple.NeedsChoice) as refused:
+            self._run(monkeypatch, wrong)
+        assert refused.value.candidates
+        assert "longer or shorter" in refused.value.candidates[0]["reason"]
 
 
 class TestWrongSongIsRejected:

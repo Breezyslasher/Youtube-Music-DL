@@ -335,6 +335,37 @@
         <summary>{{ lyricsStats.placeholder }} placeholder junk</summary>
         <pre>{{ lyricsStats.placeholder_files.join('\n') }}</pre>
       </details>
+      <details v-if="reviews.length" class="joblog">
+        <summary>{{ reviewTotal }} track(s) where every match was refused</summary>
+        <p class="note">
+          Apple offered these, and the checks turned them all down - wrong
+          song, a live or remix cut, or too far from your file's length.
+          Usually that is right, and sometimes it is not. Pick one to use
+          it and remember it, so a later scan never undoes your choice.
+        </p>
+        <div v-for="item in reviews" :key="item.path" class="review">
+          <p class="review-track">
+            <strong>{{ item.artist }} &mdash; {{ item.title }}</strong>
+            <span class="note"> ({{ fmtDuration(item.duration) }})</span>
+          </p>
+          <button v-for="song in item.candidates" :key="song.id"
+                  type="button" class="candidate"
+                  :disabled="decidingReview === item.path"
+                  @click="chooseReview(item, song.id)">
+            {{ song.artist }} &mdash; {{ song.title }}
+            <span class="note">
+              {{ song.album }}{{ song.year ? ' (' + song.year + ')' : '' }},
+              {{ fmtDuration(song.duration) }} &mdash; refused: {{ song.reason }}
+            </span>
+          </button>
+          <button type="button" class="retry"
+                  :disabled="decidingReview === item.path"
+                  @click="chooseReview(item, '')">None of these &mdash; leave it alone</button>
+        </div>
+        <p class="note" v-if="reviewTotal > reviews.length">
+          Showing {{ reviews.length }} of {{ reviewTotal }}.
+        </p>
+      </details>
       <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
       </button>

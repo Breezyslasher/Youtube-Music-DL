@@ -78,6 +78,19 @@ class AppleError(RuntimeError):
     pass
 
 
+class NeedsChoice(AppleError):
+    """Apple offered candidates and every one was refused.
+
+    Distinct from having no lyrics: the track may well be in the
+    catalogue under a name or length our checks would not accept, and a
+    person looking at the list can usually tell in a second.
+    """
+
+    def __init__(self, candidates):
+        super().__init__("%d candidate(s) refused" % len(candidates))
+        self.candidates = candidates
+
+
 class AppleUnavailable(AppleError):
     """Apple could not answer; a later run may still succeed.
 
@@ -456,27 +469,76 @@ def looks_like_the_track(song, artist: str, title: str) -> bool:
     return True
 
 
-def _best_by_duration(songs, duration_seconds: Optional[int],
-                      artist: str = "", title: str = ""):
-    """The candidate closest to the file's length that also looks like the
-    track, or None when none of them do."""
-    songs = [s for s in (songs or []) if looks_like_the_track(s, artist, title)]
-    best, best_delta = None, None
+def describe_song(song) -> dict:
+    """A catalog row reduced to what a person needs to judge it by."""
+    attributes = (song or {}).get("attributes") or {}
+    millis = attributes.get("durationInMillis") or 0
+    return {
+        "id": (song or {}).get("id") or "",
+        "title": attributes.get("name") or "",
+        "artist": attributes.get("artistName") or "",
+        "album": attributes.get("albumName") or "",
+        "year": (attributes.get("releaseDate") or "")[:4],
+        "duration": int(millis / 1000) if millis else 0,
+    }
+
+
+def _rejection(song, duration_seconds, artist, title) -> str:
+    """Why this candidate cannot be used, or "" when it can.
+
+    Worded for someone reading a list of refusals and deciding whether we
+    were right, so it says which check failed rather than just "no".
+    """
+    if not looks_like_the_track(song, artist, title):
+        attributes = (song or {}).get("attributes") or {}
+        theirs, ours = attributes.get("name") or "", title
+        if (theirs and ours and significant_qualifiers(theirs)
+                != significant_qualifiers(ours)):
+            return "a different performance (live, remix or similar)"
+        return "a different song or artist"
+    millis = ((song or {}).get("attributes") or {}).get("durationInMillis")
+    if duration_seconds and millis:
+        delta = abs(millis / 1000.0 - duration_seconds)
+        if delta > DURATION_TOLERANCE:
+            return "%.0fs longer or shorter than your file" % delta
+    return ""
+
+
+def choose_song(songs, duration_seconds: Optional[int], artist: str = "",
+                title: str = ""):
+    """(best, rejected) - the candidate to use, and the ones refused.
+
+    The refusals are the point: once matching started turning candidates
+    away, a track with no lyrics could mean Apple had nothing or that we
+    declined everything it offered, and only the second is worth a human
+    glance.
+    """
+    best, best_delta, rejected = None, None, []
     for song in songs or []:
-        attributes = song.get("attributes") or {}
-        millis = attributes.get("durationInMillis")
-        if duration_seconds and millis:
-            delta = abs(millis / 1000.0 - duration_seconds)
-            if delta > DURATION_TOLERANCE:
-                continue  # a different recording
-        else:
-            delta = float("inf")
+        reason = _rejection(song, duration_seconds, artist, title)
+        if reason:
+            rejected.append((song, reason))
+            continue
+        millis = (song.get("attributes") or {}).get("durationInMillis")
+        delta = (abs(millis / 1000.0 - duration_seconds)
+                 if duration_seconds and millis else float("inf"))
         if best is None or delta < best_delta:
             best, best_delta = song, delta
-    # Nothing agreed on duration: fall back to Apple's own ranking.
-    if best is None and songs and not duration_seconds:
-        best = songs[0]
-    return best
+    # Nothing to compare lengths against: fall back to Apple's own ranking,
+    # but only among candidates that passed the name checks.
+    if best is None and not duration_seconds:
+        for song, reason in list(rejected):
+            if reason.startswith("a different"):
+                continue
+            best = song
+            rejected.remove((song, reason))
+            break
+    return best, rejected
+
+
+def _best_by_duration(songs, duration_seconds: Optional[int],
+                      artist: str = "", title: str = ""):
+    return choose_song(songs, duration_seconds, artist, title)[0]
 
 
 def has_synced_lyrics(song) -> Optional[bool]:
@@ -524,6 +586,18 @@ def _ttml_of(song) -> Optional[str]:
     return None
 
 
+def lyrics_for_song(developer_token: str, media_user_token: str,
+                    storefront: str, song_id: str,
+                    word_by_word: bool = False) -> Optional[str]:
+    """The LRC for one known catalog id, skipping matching entirely.
+
+    What a decision resolves to: the track has been identified by hand, so
+    nothing about names or durations is asked again.
+    """
+    ttml = fetch_ttml(developer_token, media_user_token, storefront, song_id)
+    return ttml_to_lrc(ttml, word_by_word=word_by_word) if ttml else None
+
+
 def search_with_lyrics(developer_token: str, media_user_token: str,
                        storefront: str, artist: str, title: str,
                        duration_seconds: Optional[int] = None):
@@ -545,13 +619,13 @@ def search_with_lyrics(developer_token: str, media_user_token: str,
     if status in UNAVAILABLE_STATUS:
         raise AppleUnavailable("catalog search failed (status %s)" % status)
     if not data:
-        return None, None
+        return None, None, []
     try:
         songs = data["results"]["songs"]["data"]
     except (KeyError, TypeError):
-        return None, None
-    best = _best_by_duration(songs, duration_seconds, artist, title)
-    return best, _ttml_of(best)
+        return None, None, []
+    best, rejected = choose_song(songs, duration_seconds, artist, title)
+    return best, _ttml_of(best), rejected
 
 
 def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
@@ -766,8 +840,15 @@ def fetch_synced(media_user_token: str, artist: str, title: str,
         # No token means Apple was never asked, not that it had nothing.
         raise AppleUnavailable(str(exc)) from exc
     # One request: the search carries the lyrics with it.
-    song, ttml = search_with_lyrics(developer_token, media_user_token,
-                                    storefront, artist, title, duration_seconds)
+    song, ttml, rejected = search_with_lyrics(
+        developer_token, media_user_token, storefront, artist, title,
+        duration_seconds)
+    if song is None and rejected:
+        # Everything Apple offered was turned away. That is not the same as
+        # Apple having nothing, and it is the only case worth a human
+        # glance, so hand the candidates back through the exception.
+        raise NeedsChoice([dict(describe_song(other), reason=why)
+                           for other, why in rejected])
     song_id = (song or {}).get("id")
     if not song_id:
         return None

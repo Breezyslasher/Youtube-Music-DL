@@ -569,6 +569,16 @@ def meta_from_path(path: Path, root: Path):
     return artist, title, album
 
 
+def _lyrics_by_choice(config: Config, song_id: str,
+                      word_by_word: bool = False) -> Optional[str]:
+    """Lyrics for a track someone has identified by hand."""
+    from . import apple
+    developer = apple.fetch_developer_token()
+    return apple.lyrics_for_song(developer, config.apple_token,
+                                 config.apple_storefront or "us", song_id,
+                                 word_by_word=word_by_word)
+
+
 def backfill_lyrics(
     config: Config,
     on_progress: Callable[[float], None] = _noop,
@@ -576,6 +586,7 @@ def backfill_lyrics(
     files: Optional[list] = None,
     purge_bad: bool = False,
     upgrade: bool = False,
+    store=None,
 ) -> BackfillResult:
     """Fetch and write .lrc sidecars for library tracks missing them.
 
@@ -600,6 +611,8 @@ def backfill_lyrics(
                      else iter_audio_missing_lyrics(config.music_root))
     total = len(files)
     added = skipped = no_match = upgraded = deferred = 0
+    # Decisions already made outrank matching, so a rescan never undoes one.
+    choices = store.all_choices() if store is not None else {}
 
     for index, path in enumerate(files):
         meta = read_track_meta(path)
@@ -618,19 +631,34 @@ def backfill_lyrics(
         if not (artist and title):
             skipped += 1
         else:
+            chosen = choices.get(str(path))
+            if chosen is not None and not chosen.get("song_id"):
+                skipped += 1        # marked "leave this one alone"
+                if REQUEST_SPACING:
+                    time.sleep(REQUEST_SPACING)
+                on_progress((index + 1) / total * 100.0)
+                continue
+            refused = []
             try:
-                lrc = fetch_synced_lyrics(
-                    artist, title, album, duration,
-                    musixmatch_token=config.musixmatch_token,
-                    provider=config.lyrics_provider,
-                    apple_token=config.apple_token,
-                    apple_storefront=config.apple_storefront,
-                    # An upgrade run is an explicit request for per-word
-                    # timing, so ask for it whatever the standing setting -
-                    # and accept nothing else, which keeps the pass to the
-                    # two Apple calls instead of the full ten-request chain.
-                    word_by_word=True if upgrade else config.word_lyrics,
-                    word_only=upgrade)
+                if chosen:
+                    # Identified by hand: no matching, no second-guessing.
+                    lrc = _lyrics_by_choice(
+                        config, chosen["song_id"],
+                        word_by_word=True if upgrade else config.word_lyrics)
+                else:
+                    lrc = fetch_synced_lyrics(
+                        artist, title, album, duration,
+                        musixmatch_token=config.musixmatch_token,
+                        provider=config.lyrics_provider,
+                        apple_token=config.apple_token,
+                        apple_storefront=config.apple_storefront,
+                        # An upgrade run is an explicit request for per-word
+                        # timing, so ask for it whatever the standing setting
+                        # - and accept nothing else, which keeps the pass to
+                        # the two Apple calls instead of the full chain.
+                        word_by_word=True if upgrade else config.word_lyrics,
+                        word_only=upgrade,
+                        on_candidates=refused.extend)
                 unavailable = None
             except LyricsUnavailable as exc:
                 # Not a miss: nobody could answer. Leave the track alone so
@@ -663,10 +691,18 @@ def backfill_lyrics(
                 try:
                     write_lyrics_sidecar(path, lrc)
                     added += 1
+                    if store is not None:
+                        store.drop_review(str(path))
                 except Exception:
                     no_match += 1  # write failed; treat as not added
             else:
                 no_match += 1
+                # Apple offered candidates and every one was refused. That
+                # is the only kind of miss a person can usefully overrule,
+                # so queue it rather than let it vanish into a count.
+                if refused and store is not None:
+                    store.add_review(str(path), artist, title,
+                                     int(duration or 0), refused[:8])
             if REQUEST_SPACING:
                 time.sleep(REQUEST_SPACING)
         on_detail("%d/%d checked, %d %s" % (

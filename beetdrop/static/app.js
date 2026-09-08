@@ -23,6 +23,9 @@ createApp({
       scanningLyrics: false,
       checkingLyrics: false,
       lyricsStats: null,
+      reviews: [],
+      reviewTotal: 0,
+      decidingReview: "",
       testingApple: false,
       appleStatus: "",
       appleOk: false,
@@ -338,8 +341,38 @@ createApp({
       }
     },
 
+    async loadReviews() {
+      try {
+        const body = await this.api("/api/lyrics/reviews");
+        this.reviews = body.reviews || [];
+        this.reviewTotal = body.total || 0;
+      } catch (err) {
+        if (err.message !== "password required") this.reviews = [];
+      }
+    },
+
+    async chooseReview(item, songId) {
+      this.decidingReview = item.path;
+      try {
+        const body = await this.api("/api/lyrics/reviews", {
+          method: "POST",
+          body: JSON.stringify({ path: item.path, song_id: songId }),
+        });
+        this.showToast(body.detail || "saved");
+        this.reviews = this.reviews.filter((r) => r.path !== item.path);
+        this.reviewTotal = Math.max(0, this.reviewTotal - 1);
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not save that: " + err.message);
+        }
+      } finally {
+        this.decidingReview = "";
+      }
+    },
+
     async checkLyrics() {
       this.checkingLyrics = true;
+      this.loadReviews();
       try {
         this.lyricsStats = await this.api("/api/lyrics/stats");
       } catch (err) {

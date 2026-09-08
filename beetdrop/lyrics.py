@@ -247,13 +247,20 @@ def _musixmatch(artist, title, album, duration_seconds, token):
 
 
 def _apple(artist, title, duration_seconds, token, storefront, word_by_word,
-           wait=True):
+           wait=True, on_candidates=None):
     if not token:
         return None
     try:
         return apple.fetch_synced(token, artist, title, duration_seconds,
                                   storefront=storefront or "us",
                                   word_by_word=word_by_word, wait=wait)
+    except apple.NeedsChoice as refused:
+        # Apple had candidates and we turned them all away. Not a miss to
+        # record silently: hand them up so a person can look, then carry
+        # on down the chain, because another source may still have this.
+        if on_candidates:
+            on_candidates(refused.candidates)
+        return None
     except apple.AppleUnavailable as exc:
         raise LyricsUnavailable(str(exc)) from exc
     except Exception:
@@ -270,7 +277,8 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                         apple_token: str = "",
                         apple_storefront: str = "us",
                         word_by_word: bool = False,
-                        word_only: bool = False) -> Optional[str]:
+                        word_only: bool = False,
+                        on_candidates=None) -> Optional[str]:
     """The LRC text for this track, or None when no *synced* lyrics exist.
 
     Raises LyricsUnavailable when nothing was found *and* some source
@@ -314,7 +322,8 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                     # could answer; otherwise skip it and let the others try.
                     memo[name] = _apple(artist, title, duration_seconds,
                                         apple_token, apple_storefront,
-                                        word_by_word, wait=word_only)
+                                        word_by_word, wait=word_only,
+                                        on_candidates=on_candidates)
             except LyricsUnavailable as exc:
                 # Keep asking the rest: another source may still have it,
                 # and a hit is a better outcome than a deferral.

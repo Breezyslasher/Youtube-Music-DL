@@ -95,6 +95,11 @@ class AppleVerifyRequest(BaseModel):
     code: str
 
 
+class ReviewChoice(BaseModel):
+    path: str
+    song_id: str = ""    # "" means leave this track alone
+
+
 SESSION_COOKIE = "beetdrop_session"
 
 
@@ -508,6 +513,55 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
         body["coverage_pct"] = round(stats.coverage_pct, 1)
         body["word_pct"] = round(stats.word_pct, 1)
         return body
+
+    @app.get("/api/lyrics/reviews", dependencies=[protected])
+    async def api_lyrics_reviews():
+        """Tracks where Apple offered candidates and every one was refused.
+
+        Only these: a track Apple returned nothing for has nothing to
+        choose between, and listing it would be clicking through blanks.
+        """
+        return {"reviews": store.list_reviews(), "total": store.count_reviews()}
+
+    @app.post("/api/lyrics/reviews", dependencies=[protected])
+    async def api_lyrics_choose(body: ReviewChoice):
+        """Record a decision and act on it straight away.
+
+        Remembered, so a later scan uses it rather than matching afresh -
+        and so correcting a wrong match sticks.
+        """
+        config = effective_config()
+        # The path travels in the body, not the URL: a library path is
+        # full of slashes and spaces, and routing on it turned every
+        # decision into an encoding problem.
+        track = Path(body.path)
+        store.set_choice(str(track), body.song_id)
+        store.drop_review(str(track))
+        if not body.song_id:
+            return {"ok": True, "detail": "left alone"}
+        if not track.is_file():
+            raise HTTPException(status_code=404, detail="that file is gone")
+        # The decision is already saved, so a fetch that fails now is a
+        # delay rather than a loss: say so instead of reporting an error
+        # over a choice that was in fact recorded.
+        try:
+            from .backfill import _lyrics_by_choice
+            lrc = await asyncio.to_thread(
+                _lyrics_by_choice, config, body.song_id, config.word_lyrics)
+        except Exception as exc:
+            return {"ok": True, "detail":
+                    "saved, but Apple could not be reached just now (%s) - "
+                    "the next scan will use your pick" % str(exc)[:120]}
+        if not lrc:
+            return {"ok": True, "detail":
+                    "saved, but Apple has no lyrics for that one"}
+        from .library import write_lyrics_sidecar
+        await asyncio.to_thread(write_lyrics_sidecar, track, lrc, True)
+        return {"ok": True, "detail": "lyrics written"}
+
+    @app.delete("/api/lyrics/reviews", dependencies=[protected])
+    async def api_lyrics_clear_reviews():
+        return {"removed": store.clear_reviews()}
 
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False):
