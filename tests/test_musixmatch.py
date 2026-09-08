@@ -70,6 +70,40 @@ class TestFetchSynced:
                             lambda *a, **k: FakeResp({"message": {"body": {}}}))
         assert mxm.fetch_synced("tok", "Artist", "Song") is None
 
+    def test_length_filter_is_paired_with_a_deviation(self, monkeypatch):
+        # A bare f_subtitle_length is a hard filter that rejects most
+        # tracks; it must always carry a deviation allowance.
+        seen = []
+
+        def fake_get(url, params=None, **kwargs):
+            seen.append(dict(params or {}))
+            return FakeResp(subtitles_payload("[00:01.00]Line"))
+        monkeypatch.setattr(mxm.requests, "get", fake_get)
+        mxm.fetch_synced("tok", "Artist", "Song", 200)
+        assert seen[0]["f_subtitle_length"] == "200"
+        assert seen[0]["f_subtitle_length_max_deviation"] == str(
+            mxm.SUBTITLE_LENGTH_DEVIATION)
+
+    def test_falls_back_when_length_filter_finds_nothing(self, monkeypatch):
+        # First attempt (length-filtered) misses, the looser retry hits.
+        def fake_get(url, params=None, **kwargs):
+            params = dict(params or {})
+            if "f_subtitle_length" in params:
+                return FakeResp({"message": {"body": {}}})
+            return FakeResp(subtitles_payload("[00:01.00]Found it"))
+        monkeypatch.setattr(mxm.requests, "get", fake_get)
+        assert mxm.fetch_synced("tok", "Artist", "Song", 200) == "[00:01.00]Found it"
+
+    def test_gives_up_after_every_attempt(self, monkeypatch):
+        calls = {"n": 0}
+
+        def fake_get(url, params=None, **kwargs):
+            calls["n"] += 1
+            return FakeResp({"message": {"body": {}}})
+        monkeypatch.setattr(mxm.requests, "get", fake_get)
+        assert mxm.fetch_synced("tok", "Artist", "Song", 200) is None
+        assert calls["n"] == 3  # filtered, duration-only, then unfiltered
+
     def test_no_token_or_fields(self, monkeypatch):
         called = {"n": 0}
         monkeypatch.setattr(mxm.requests, "get",
