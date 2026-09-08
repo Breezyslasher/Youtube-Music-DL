@@ -76,6 +76,11 @@ def looks_synthetic(lrc: str) -> bool:
     return gap > 0 and hits / len(gaps) >= _UNIFORM_RATIO
 
 
+def has_word_timing(lrc: str) -> bool:
+    """True for Enhanced (A2) LRC - inline <mm:ss.xx> tags before words."""
+    return re.search(r"<\d{1,2}:\d{2}[.:]\d{1,3}>", lrc or "") is not None
+
+
 def _primary_artist(artist: str) -> str:
     """"Billie Eilish, Khalid" -> "Billie Eilish"; the name a lyrics
     database files the track under."""
@@ -237,18 +242,39 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
     """
     if not artist or not title:
         return None
-    sources = {
-        "lrclib": lambda: _lrclib(artist, title, album, duration_seconds),
-        "musixmatch": lambda: _musixmatch(artist, title, album,
-                                          duration_seconds, musixmatch_token),
-        "apple": lambda: _apple(artist, title, duration_seconds, apple_token,
-                                apple_storefront, word_by_word),
-    }
-    primary = provider if provider in sources else "lrclib"
+
+    memo = {}
+
+    def source(name):
+        """Each source is asked at most once per track."""
+        if name not in memo:
+            if name == "lrclib":
+                memo[name] = _lrclib(artist, title, album, duration_seconds)
+            elif name == "musixmatch":
+                memo[name] = _musixmatch(artist, title, album,
+                                         duration_seconds, musixmatch_token)
+            else:
+                memo[name] = _apple(artist, title, duration_seconds,
+                                    apple_token, apple_storefront, word_by_word)
+        return memo[name]
+
+    def usable(lrc):
+        # Never accept generated placeholder text, whatever returned it.
+        return bool(lrc) and not looks_synthetic(lrc)
+
+    # Apple is the only source with per-word timing, so when that is what
+    # was asked for it has to be tried first - otherwise a line-level hit
+    # from a source earlier in the order wins and Apple is never asked,
+    # silently downgrading every track the others happen to have.
+    if word_by_word and apple_token:
+        lrc = source("apple")
+        if usable(lrc) and has_word_timing(lrc):
+            return lrc
+
+    primary = provider if provider in PROVIDERS else "lrclib"
     order = [primary] + [name for name in PROVIDERS if name != primary]
     for name in order:
-        lrc = sources[name]()
-        # Never accept generated placeholder text, whatever returned it.
-        if lrc and not looks_synthetic(lrc):
+        lrc = source(name)
+        if usable(lrc):
             return lrc
     return None
