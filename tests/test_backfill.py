@@ -500,3 +500,47 @@ class TestUpgradeRepairsBackwardsTiming:
 
         found = [p.name for p in iter_audio_line_level_lyrics(root)]
         assert found == ["broken.opus"]  # the sound one is left alone
+
+
+class TestStatsNameTheTracks:
+    def _library(self, tmp_path):
+        root = tmp_path / "music"
+        (root / "A").mkdir(parents=True)
+        return root
+
+    def test_each_bucket_is_named(self, tmp_path):
+        root = self._library(tmp_path)
+        for name, lrc in [("word", "[00:01.00]<00:01.00>hi"),
+                          ("line", "[00:01.00]plain"),
+                          ("none", None)]:
+            (root / "A" / (name + ".opus")).write_bytes(b"x")
+            if lrc:
+                (root / "A" / (name + ".lrc")).write_text(lrc)
+        stats = backfill.lyrics_stats(root)
+        assert stats.line_level_files == ["A/line.opus"]
+        assert stats.missing_files == ["A/none.opus"]
+        # A sound word-level track is in no bucket.
+        assert "A/word.opus" not in stats.line_level_files
+
+    def test_sample_caps_the_lists(self, tmp_path):
+        root = self._library(tmp_path)
+        for i in range(10):
+            track = root / "A" / ("t%d.opus" % i)
+            track.write_bytes(b"x")
+            track.with_suffix(".lrc").write_text("[00:01.00]plain")
+        capped = backfill.lyrics_stats(root, sample=3)
+        assert capped.line_level == 10          # the count is complete
+        assert len(capped.line_level_files) == 3  # the list is capped
+        every = backfill.lyrics_stats(root, sample=0)
+        assert len(every.line_level_files) == 10
+
+    def test_endpoint_includes_the_names(self, tmp_path):
+        root = self._library(tmp_path)
+        track = root / "A" / "line.opus"
+        track.write_bytes(b"x")
+        track.with_suffix(".lrc").write_text("[00:01.00]plain")
+        config = Config(music_root=root, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        with TestClient(create_app(config)) as client:
+            body = client.get("/api/lyrics/stats").json()
+        assert body["line_level_files"] == ["A/line.opus"]

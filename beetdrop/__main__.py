@@ -101,6 +101,15 @@ def cmd_grab(args, config: Config) -> int:
 
 def cmd_scan_lyrics(args, config: Config) -> int:
     from .backfill import backfill_lyrics, lyrics_stats
+    if args.list:
+        # Uncapped, one path per line, so it can be piped or grepped.
+        stats = lyrics_stats(config.music_root, sample=0)
+        bucket = {"line": stats.line_level_files,
+                  "missing": stats.missing_files,
+                  "placeholder": stats.placeholder_files}[args.list]
+        for name in bucket:
+            print(name)
+        return 0
     if args.stats:
         s = lyrics_stats(config.music_root)
         print("%d of %d tracks have lyrics (%.1f%%)" % (
@@ -254,6 +263,9 @@ def main(argv=None) -> int:
                             help="fetch synced lyrics for library tracks missing them")
     p_scan.add_argument("--refresh", action="store_true",
                         help="delete placeholder .lrc files first, then re-fetch them")
+    p_scan.add_argument("--list", choices=("line", "missing", "placeholder"),
+                        help="print every track in that bucket, one per line: "
+                             "line = has lyrics but no word-by-word")
     p_scan.add_argument("--stats", action="store_true",
                         help="report lyric coverage and how much is word-by-word, "
                              "without fetching anything")
