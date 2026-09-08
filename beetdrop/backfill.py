@@ -328,8 +328,11 @@ def backfill_lyrics(
                     apple_token=config.apple_token,
                     apple_storefront=config.apple_storefront,
                     # An upgrade run is an explicit request for per-word
-                    # timing, so ask for it whatever the standing setting.
-                    word_by_word=True if upgrade else config.word_lyrics)
+                    # timing, so ask for it whatever the standing setting -
+                    # and accept nothing else, which keeps the pass to the
+                    # two Apple calls instead of the full ten-request chain.
+                    word_by_word=True if upgrade else config.word_lyrics,
+                    word_only=upgrade)
             except Exception:
                 lrc = None
             if upgrade:
