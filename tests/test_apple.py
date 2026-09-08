@@ -529,3 +529,81 @@ class TestThrottleBackoff:
         data, status = apple._get_json("https://x/y", {})
         assert (data, status) == (None, 404)
         assert len(seen) == 1     # 404 means no lyrics; retrying is pointless
+
+
+class TestStaleDeveloperTokenRefresh:
+    """The developer token is cached for six hours and Apple rotates it on
+    its own schedule, so a long scan outlives it. A 401 has to cost a
+    retry, not a track silently recorded as having no lyrics."""
+
+    class Reply:
+        def __init__(self, status, payload=None):
+            self.status_code = status
+            self.ok = status == 200
+            self.headers = {}
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    def _reset(self, monkeypatch, cached="old"):
+        import time as _t
+        apple._dev_token["value"] = cached
+        apple._dev_token["at"] = _t.time()
+        monkeypatch.setattr(apple, "_last_refresh", 0.0)
+
+    def test_401_refreshes_the_token_and_retries(self, monkeypatch):
+        self._reset(monkeypatch)
+        sent = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            sent.append((headers or {}).get("Authorization"))
+            if sent[-1] == "Bearer old":
+                return self.Reply(401)
+            return self.Reply(200, {"results": {"songs": {"data": [{"id": "42"}]}}})
+
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False: "new")
+
+        got = apple.search_song("old", "mut", "us", "Adele", "Hello")
+        assert got == "42"                       # recovered, not a miss
+        assert sent == ["Bearer old", "Bearer new"]
+
+    def test_a_scan_rescrapes_once_not_once_per_track(self, monkeypatch):
+        """The guard our Kodi addon does not need: it retries per request,
+        which for thousands of tracks against a dead media-user-token would
+        rescrape the web player thousands of times."""
+        self._reset(monkeypatch)
+        scrapes = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            return self.Reply(401)              # nothing ever recovers
+
+        def fake_fetch(force=False):
+            scrapes.append(force)
+            apple._dev_token["value"] = "old"   # Apple hands back the same one
+            return "old"
+
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        monkeypatch.setattr(apple, "fetch_developer_token", fake_fetch)
+
+        for _ in range(200):                    # a scan's worth of tracks
+            assert apple.search_song("old", "mut", "us", "A", "T") is None
+        assert len(scrapes) == 1, scrapes
+
+    def test_another_caller_refreshing_is_reused(self, monkeypatch):
+        """Second call in a track: fetch_synced still holds the old token,
+        but the cache already has the new one, so no rescrape."""
+        self._reset(monkeypatch, cached="new")
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False: pytest.fail("rescraped"))
+        assert apple._refresh_developer_token("old") == "new"
+
+    def test_cooldown_blocks_a_second_rescrape(self, monkeypatch):
+        import time as _t
+        self._reset(monkeypatch)
+        monkeypatch.setattr(apple, "_last_refresh", _t.time())
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False: pytest.fail("rescraped"))
+        assert apple._refresh_developer_token("old") == "old"
