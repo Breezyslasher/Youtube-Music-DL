@@ -31,7 +31,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, musixmatch, updater
+from . import __version__, apple, musixmatch, updater
 from .auth import (
     LoginThrottle,
     check_session_token,
@@ -46,6 +46,7 @@ from .db import Store
 from .download import ytdlp_version
 from .events import Broadcaster, sse_format
 from .jobs import JobManager
+from .lyrics import PROVIDERS as LYRICS_PROVIDERS
 from .search import search_albums, search_songs, search_videos
 
 SSE_KEEPALIVE_SECONDS = 15
@@ -68,10 +69,13 @@ class SettingsUpdate(BaseModel):
     cookies: Optional[str] = None  # cookies.txt content; "" clears
     music_root: Optional[str] = None
     lyrics: Optional[bool] = None
-    lyrics_provider: Optional[str] = None  # "lrclib" | "musixmatch"
+    lyrics_provider: Optional[str] = None  # lrclib | musixmatch | apple
     musixmatch_token: Optional[str] = None  # "" clears
     video_root: Optional[str] = None
     video_max_height: Optional[int] = None
+    apple_token: Optional[str] = None  # "" clears
+    apple_storefront: Optional[str] = None
+    word_lyrics: Optional[bool] = None
 
 
 class LoginRequest(BaseModel):
@@ -117,8 +121,14 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             config.lyrics_enabled = stored["lyrics"] == "1"
         if stored.get("mxm_token"):
             config.musixmatch_token = stored["mxm_token"]
-        if stored.get("lyrics_provider") in ("lrclib", "musixmatch"):
+        if stored.get("lyrics_provider") in LYRICS_PROVIDERS:
             config.lyrics_provider = stored["lyrics_provider"]
+        if stored.get("apple_token"):
+            config.apple_token = stored["apple_token"]
+        if stored.get("apple_storefront"):
+            config.apple_storefront = stored["apple_storefront"]
+        if stored.get("word_lyrics") in ("0", "1"):
+            config.word_lyrics = stored["word_lyrics"] == "1"
         if stored.get("video_root") and not video_locked:
             config.video_root = Path(stored["video_root"])
         if stored.get("video_max_height"):
@@ -306,6 +316,9 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             "lyrics": config.lyrics_enabled,
             "lyrics_provider": config.lyrics_provider,
             "musixmatch_token_set": bool(config.musixmatch_token),
+            "apple_token_set": bool(config.apple_token),
+            "apple_storefront": config.apple_storefront,
+            "word_lyrics": config.word_lyrics,
             "video_root": str(config.video_root),
             "video_root_locked": video_locked,  # env-controlled; hide field
             "video_max_height": config.video_max_height,
@@ -338,10 +351,17 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
                 uploaded_cookies.write_text(body.cookies)
             elif uploaded_cookies.exists():
                 uploaded_cookies.unlink()
-        if body.lyrics_provider is not None and body.lyrics_provider not in ("lrclib", "musixmatch"):
-            raise HTTPException(status_code=422, detail="lyrics_provider must be lrclib or musixmatch")
+        if body.lyrics_provider is not None and body.lyrics_provider not in LYRICS_PROVIDERS:
+            raise HTTPException(
+                status_code=422,
+                detail="lyrics_provider must be one of %s" % (LYRICS_PROVIDERS,))
         updates = {k: v for k, v in body.model_dump().items()
-                   if v is not None and k not in ("cookies", "musixmatch_token")}
+                   if v is not None and k not in ("cookies", "musixmatch_token",
+                                                  "apple_token", "word_lyrics")}
+        if body.word_lyrics is not None:
+            updates["word_lyrics"] = "1" if body.word_lyrics else "0"
+        if body.apple_token is not None:
+            updates["apple_token"] = body.apple_token.strip()
         if "lyrics" in updates:
             updates["lyrics"] = "1" if updates["lyrics"] else "0"
         if body.musixmatch_token is not None:
@@ -400,6 +420,16 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc))
         store.set_settings({"mxm_token": token})
         return {"ok": True, "token_set": True}
+
+    @app.post("/api/lyrics/apple-test", dependencies=[protected])
+    async def api_apple_test():
+        """Check the stored Apple media-user-token still works. It is
+        long-lived but not permanent, and an expired one otherwise shows
+        up only as Apple silently never returning lyrics again."""
+        config = effective_config()
+        result = await asyncio.to_thread(
+            apple.check_token, config.apple_token, config.apple_storefront)
+        return result
 
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False):

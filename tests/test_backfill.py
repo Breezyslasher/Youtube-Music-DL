@@ -112,8 +112,7 @@ class TestBackfill:
         bare = config.music_root / "bare.opus"
         make_opus(bare)
 
-        def fake_fetch(artist, title, album="", duration_seconds=None,
-                       musixmatch_token="", provider="lrclib"):
+        def fake_fetch(artist, title, album="", duration_seconds=None, **kwargs):
             return "[00:01.00]la" if title == "HasLyrics" else None
         monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake_fetch)
         monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
@@ -135,8 +134,7 @@ class TestBackfill:
 
         seen = {}
 
-        def fake_fetch(artist, title, album="", duration_seconds=None,
-                       musixmatch_token="", provider="lrclib"):
+        def fake_fetch(artist, title, album="", duration_seconds=None, **kwargs):
             seen.update(artist=artist, title=title, album=album,
                         duration=duration_seconds)
             return "[00:01.00]la"

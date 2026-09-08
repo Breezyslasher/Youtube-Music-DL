@@ -1,0 +1,295 @@
+"""Apple Music lyrics.
+
+Apple's catalog API serves lyrics as TTML. /syllable-lyrics is the better
+endpoint of the two: it returns word-level timing when Apple has it and
+falls back to line-level otherwise, so one request always gets the best
+available quality.
+
+Two credentials are needed and only one of them is personal:
+
+  - a developer token, which is a public JWT shipped inside the Music web
+    player and is fetched (and cached) automatically here;
+  - a media-user-token, which identifies a subscribed account and must be
+    supplied by the user in Settings.
+
+Lyrics are subscriber-gated licensed content, so this is off by default
+and only ever writes sidecars into the user's own library.
+"""
+
+from __future__ import annotations
+
+import re
+import threading
+import time
+from typing import Optional
+from xml.etree import ElementTree as ET
+
+import requests
+
+SEARCH_URL = "https://amp-api.music.apple.com/v1/catalog/%s/search"
+LYRICS_URL = "https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics"
+WEB_PLAYER = "https://music.apple.com/us/browse"
+TIMEOUT = 15
+# How far a catalog hit may be from the file's duration to be the same
+# recording. Apple reports milliseconds.
+DURATION_TOLERANCE = 8
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+_JWT = re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}")
+_ASSET = re.compile(r'src="(/assets/[^"]+\.js)"')
+
+_TTML_NS = "{http://www.w3.org/ns/ttml}"
+_ITUNES_TIMING = "{http://music.apple.com/lyric-ttml-internal}timing"
+
+# The developer token is public but rotates; cache it rather than scraping
+# the web player for every track.
+_DEV_TOKEN_TTL = 6 * 3600
+_dev_token = {"value": "", "at": 0.0}
+_dev_lock = threading.Lock()
+
+
+class AppleError(RuntimeError):
+    pass
+
+
+def _headers(developer_token: str, media_user_token: str) -> dict:
+    return {
+        "Authorization": "Bearer " + developer_token,
+        "Media-User-Token": media_user_token,
+        "Origin": "https://music.apple.com",
+        "Referer": "https://music.apple.com/",
+        "User-Agent": UA,
+    }
+
+
+def fetch_developer_token(force: bool = False) -> str:
+    """The Music web player's public developer token, cached."""
+    with _dev_lock:
+        fresh = (not force and _dev_token["value"]
+                 and time.time() - _dev_token["at"] < _DEV_TOKEN_TTL)
+        if fresh:
+            return _dev_token["value"]
+    try:
+        response = requests.get(WEB_PLAYER, headers={"User-Agent": UA},
+                                timeout=TIMEOUT)
+        if not response.ok:
+            raise AppleError("music.apple.com returned %s" % response.status_code)
+        html = response.text
+        token = ""
+        found = _JWT.search(html)
+        if found:
+            token = found.group(0)
+        else:
+            for path in _ASSET.findall(html)[:12]:
+                asset = requests.get("https://music.apple.com" + path,
+                                     headers={"User-Agent": UA}, timeout=TIMEOUT)
+                if not asset.ok:
+                    continue
+                found = _JWT.search(asset.text)
+                if found:
+                    token = found.group(0)
+                    break
+    except requests.RequestException as exc:
+        raise AppleError("could not reach Apple Music: %s" % exc) from exc
+    if not token:
+        raise AppleError("no developer token found in the Music web player")
+    with _dev_lock:
+        _dev_token["value"] = token
+        _dev_token["at"] = time.time()
+    return token
+
+
+def _get_json(url, headers, params=None):
+    try:
+        response = requests.get(url, headers=headers, params=params,
+                                timeout=TIMEOUT)
+    except requests.RequestException:
+        return None, 0
+    if not response.ok:
+        return None, response.status_code
+    try:
+        return response.json(), 200
+    except ValueError:
+        return None, 200
+
+
+def search_song(developer_token: str, media_user_token: str, storefront: str,
+                artist: str, title: str,
+                duration_seconds: Optional[int] = None) -> Optional[str]:
+    """The catalog id of the best match, or None."""
+    data, _ = _get_json(
+        SEARCH_URL % storefront, _headers(developer_token, media_user_token),
+        {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
+         "limit": "5"})
+    if not data:
+        return None
+    try:
+        songs = data["results"]["songs"]["data"]
+    except (KeyError, TypeError):
+        return None
+    best, best_delta = None, None
+    for song in songs:
+        attributes = song.get("attributes") or {}
+        millis = attributes.get("durationInMillis")
+        if duration_seconds and millis:
+            delta = abs(millis / 1000.0 - duration_seconds)
+            if delta > DURATION_TOLERANCE:
+                continue  # a different recording
+        else:
+            delta = float("inf")
+        if best is None or delta < best_delta:
+            best, best_delta = song.get("id"), delta
+    # Nothing agreed on duration: fall back to Apple's own ranking.
+    if best is None and songs and not duration_seconds:
+        best = songs[0].get("id")
+    return best
+
+
+def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
+               song_id: str) -> Optional[str]:
+    data, _ = _get_json(LYRICS_URL % (storefront, song_id),
+                        _headers(developer_token, media_user_token))
+    if not data:
+        return None
+    try:
+        return data["data"][0]["attributes"]["ttml"]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+# -- TTML -> LRC ---------------------------------------------------------
+
+
+def _parse_time(value) -> Optional[float]:
+    """TTML clock values: "20.783", "1:20.783", "1:02:20.783"."""
+    if not value:
+        return None
+    parts = str(value).strip().split(":")
+    try:
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60 + float(part)
+    except ValueError:
+        return None
+    return seconds
+
+
+def _stamp(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0.0
+    minutes = int(seconds // 60)
+    return "%02d:%05.2f" % (minutes, seconds - minutes * 60)
+
+
+def is_word_level(ttml: str) -> bool:
+    return (re.search(r'timing="Word"', ttml or "", re.I) is not None)
+
+
+def ttml_to_lrc(ttml: str, word_by_word: bool = False) -> Optional[str]:
+    """Apple TTML to LRC.
+
+    Line-level by default. With word_by_word, and when Apple supplied word
+    timing, emits Enhanced (A2) LRC - still a valid LRC line, with inline
+    <mm:ss.xx> tags before each word.
+    """
+    if not ttml:
+        return None
+    try:
+        root = ET.fromstring(ttml)
+    except ET.ParseError:
+        return None
+
+    want_words = word_by_word and is_word_level(ttml)
+    lines = []
+    for paragraph in root.iter(_TTML_NS + "p"):
+        begin = _parse_time(paragraph.get("begin"))
+        if begin is None:
+            continue
+        spans = list(paragraph.findall(_TTML_NS + "span"))
+        if want_words and spans:
+            pieces = []
+            for span in spans:
+                word = "".join(span.itertext()).strip()
+                if not word:
+                    continue
+                at = _parse_time(span.get("begin"))
+                stamp = "<%s>" % _stamp(at if at is not None else begin)
+                pieces.append(stamp + word)
+            text = " ".join(pieces)
+        else:
+            text = " ".join("".join(paragraph.itertext()).split())
+        if not text.strip():
+            continue
+        lines.append((begin, "[%s]%s" % (_stamp(begin), text)))
+
+    if not lines:
+        return None
+    lines.sort(key=lambda pair: pair[0])
+    return "\n".join(line for _, line in lines)
+
+
+def check_token(media_user_token: str, storefront: str = "us") -> dict:
+    """Is this media-user-token still good?
+
+    A media-user-token is long-lived but not permanent: signing out,
+    changing the password, or letting the subscription lapse invalidates
+    it, and Apple then just refuses lyrics. Without an explicit check that
+    shows up only as lyrics quietly never coming from Apple again, so the
+    UI offers this and says which of the two tokens is at fault.
+    """
+    if not media_user_token:
+        return {"ok": False, "detail": "no Apple media-user-token is set"}
+    try:
+        developer_token = fetch_developer_token(force=True)
+    except AppleError as exc:
+        return {"ok": False, "detail": "could not get a developer token: %s" % exc}
+
+    headers = _headers(developer_token, media_user_token)
+    data, status = _get_json(SEARCH_URL % storefront, headers,
+                             {"term": "Billie Eilish lovely", "types": "songs",
+                              "limit": "1"})
+    if status in (401, 403):
+        return {"ok": False, "detail":
+                "Apple rejected the media-user-token (%s) - sign in again and "
+                "copy a fresh one" % status}
+    if not data:
+        return {"ok": False, "detail": "Apple search failed (status %s)" % status}
+    try:
+        song_id = data["results"]["songs"]["data"][0]["id"]
+    except (KeyError, IndexError, TypeError):
+        return {"ok": False, "detail": "unexpected search response from Apple"}
+
+    _, status = _get_json(LYRICS_URL % (storefront, song_id), headers)
+    if status == 200:
+        return {"ok": True, "detail": "Apple Music lyrics are working"}
+    if status in (401, 403):
+        return {"ok": False, "detail":
+                "search works but lyrics were refused (%s) - the account may "
+                "not have an active subscription" % status}
+    if status == 400:
+        return {"ok": False, "detail":
+                "Apple refused the request (400) - the developer token lacks "
+                "lyrics permission"}
+    return {"ok": False, "detail": "Apple returned status %s for lyrics" % status}
+
+
+def fetch_synced(media_user_token: str, artist: str, title: str,
+                 duration_seconds: Optional[int] = None,
+                 storefront: str = "us",
+                 word_by_word: bool = False) -> Optional[str]:
+    """The LRC for this track from Apple Music, or None. Never raises - a
+    miss is a normal outcome."""
+    if not media_user_token or not artist or not title:
+        return None
+    try:
+        developer_token = fetch_developer_token()
+    except AppleError:
+        return None
+    song_id = search_song(developer_token, media_user_token, storefront,
+                          artist, title, duration_seconds)
+    if not song_id:
+        return None
+    ttml = fetch_ttml(developer_token, media_user_token, storefront, song_id)
+    if not ttml:
+        return None
+    return ttml_to_lrc(ttml, word_by_word=word_by_word)

@@ -109,7 +109,7 @@ def install_fakes(monkeypatch, mb, fmt="opus", lrc=None):
     # Lyrics fetch faked at the network boundary; None unless a test opts in.
     monkeypatch.setattr(grab_module, "fetch_synced_lyrics",
                         lambda artist, title, album="", duration_seconds=None,
-                        musixmatch_token="", provider="lrclib": lrc)
+                        **kwargs: lrc)
 
 
 class TestSingleGrabIntegration:

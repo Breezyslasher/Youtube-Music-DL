@@ -21,6 +21,9 @@ createApp({
       updatingYtdlp: false,
       fetchingToken: false,
       scanningLyrics: false,
+      testingApple: false,
+      appleStatus: "",
+      appleOk: false,
 
       jobs: [],
       queueOpen: false,
@@ -238,6 +241,9 @@ createApp({
           // partial/stale settings object never silently flips it.
           lyrics: this.settings.lyrics !== false,
           lyrics_provider: this.settings.lyrics_provider || "lrclib",
+          apple_token: "",
+          apple_storefront: this.settings.apple_storefront || "us",
+          word_lyrics: !!this.settings.word_lyrics,
           video_root: this.settings.video_root,
           video_max_height: this.settings.video_max_height != null
             ? this.settings.video_max_height : 1080,
@@ -258,6 +264,8 @@ createApp({
         concurrency: Number(this.draft.concurrency) || undefined,
         lyrics: !!this.draft.lyrics,
         lyrics_provider: this.draft.lyrics_provider,
+        apple_storefront: this.draft.apple_storefront,
+        word_lyrics: !!this.draft.word_lyrics,
         video_max_height: Number(this.draft.video_max_height),
       };
       // Only send the library paths when they are editable (not env-locked).
@@ -267,6 +275,9 @@ createApp({
       if (this.settings && !this.settings.video_root_locked) {
         update.video_root = this.draft.video_root;
       }
+      // Only send the Apple token when one was typed; the field is left
+      // blank on open so a saved token is never echoed back to the browser.
+      if (this.draft.apple_token) update.apple_token = this.draft.apple_token;
       if (this.draft.new_password) update.password = this.draft.new_password;
       if (this.draft.cookies && this.draft.cookies.trim()) update.cookies = this.draft.cookies;
       try {
@@ -339,6 +350,22 @@ createApp({
           : "Scan failed: " + err.message);
       } finally {
         this.scanningLyrics = false;
+      }
+    },
+
+    async testAppleToken() {
+      this.testingApple = true;
+      this.appleStatus = "";
+      try {
+        const body = await this.api("/api/lyrics/apple-test", { method: "POST" });
+        this.appleOk = !!body.ok;
+        this.appleStatus = body.detail || (body.ok ? "Working" : "Not working");
+      } catch (err) {
+        if (err.message === "password required") return;
+        this.appleOk = false;
+        this.appleStatus = "Test failed: " + err.message;
+      } finally {
+        this.testingApple = false;
       }
     },
 

@@ -214,6 +214,7 @@
         <select v-model="draft.lyrics_provider">
           <option value="lrclib">LRCLIB (free, no token)</option>
           <option value="musixmatch">Musixmatch (needs token)</option>
+          <option value="apple">Apple Music (best coverage, needs token)</option>
         </select>
       </label>
       <p class="note">
@@ -225,6 +226,35 @@
       <button type="button" @click="fetchMxmToken" :disabled="fetchingToken">
         {{ fetchingToken ? 'Fetching token...' : 'Fetch Musixmatch token' }}
       </button>
+
+      <label>Apple Music token
+        <input v-model="draft.apple_token" type="password" spellcheck="false"
+               autocomplete="off"
+               :placeholder="settings && settings.apple_token_set
+                             ? 'a token is saved - paste a new one to replace it'
+                             : 'paste your media-user-token'">
+      </label>
+      <label>Apple storefront
+        <input v-model="draft.apple_storefront" type="text" spellcheck="false"
+               placeholder="us">
+      </label>
+      <p class="note">
+        Apple has the best coverage of the three, including older catalogue
+        the others miss, and is the only source with per-word timing. It
+        needs the media-user-token of a signed-in account with an active
+        subscription (browser devtools &rarr; any <code>amp-api</code>
+        request &rarr; the Media-User-Token header). Lyrics there are
+        licensed content, so this stays inert until you set a token.
+      </p>
+      <label class="checkrow">
+        <input type="checkbox" v-model="draft.word_lyrics">
+        Word-by-word timing (Enhanced LRC) when the source has it
+      </label>
+      <p class="note">
+        Writes inline &lt;mm:ss.xx&gt; tags before each word. Only turn this
+        on if your player understands Enhanced (A2) LRC - Plex, Navidrome,
+        Jellyfin and Kodi are line-level and will show the tags as text.
+      </p>
       <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
       </button>
