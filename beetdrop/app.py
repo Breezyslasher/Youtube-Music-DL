@@ -24,7 +24,7 @@ import os
 import secrets as _secrets
 import time
 from contextlib import asynccontextmanager
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -50,6 +50,7 @@ from .events import Broadcaster, sse_format
 from .jobs import JobManager
 from .lyrics import PROVIDERS as LYRICS_PROVIDERS
 from .search import search_albums, search_songs, search_videos
+from .settings import apply_stored_settings
 
 SSE_KEEPALIVE_SECONDS = 15
 STATIC_DIR = Path(__file__).parent / "static"
@@ -117,41 +118,16 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
     video_locked = "VIDEO_PATH" in os.environ
 
     def effective_config() -> Config:
-        """Environment defaults, overridden by settings stored in SQLite."""
-        stored = store.get_settings()
-        config = replace(base)
-        if stored.get("output_format"):
-            config.output_format = stored["output_format"]
-        if stored.get("bitrate"):
-            config.bitrate = stored["bitrate"]
-        if stored.get("password"):
-            config.password = stored["password"]
-        if stored.get("concurrency"):
-            try:
-                config.concurrency = int(stored["concurrency"])
-            except ValueError:
-                pass
-        if stored.get("music_root") and not music_locked:
-            config.music_root = Path(stored["music_root"])
-        if stored.get("lyrics") in ("0", "1"):
-            config.lyrics_enabled = stored["lyrics"] == "1"
-        if stored.get("mxm_token"):
-            config.musixmatch_token = stored["mxm_token"]
-        if stored.get("lyrics_provider") in LYRICS_PROVIDERS:
-            config.lyrics_provider = stored["lyrics_provider"]
-        if stored.get("apple_token"):
-            config.apple_token = stored["apple_token"]
-        if stored.get("apple_storefront"):
-            config.apple_storefront = stored["apple_storefront"]
-        if stored.get("word_lyrics") in ("0", "1"):
-            config.word_lyrics = stored["word_lyrics"] == "1"
-        if stored.get("video_root") and not video_locked:
-            config.video_root = Path(stored["video_root"])
-        if stored.get("video_max_height"):
-            try:
-                config.video_max_height = int(stored["video_max_height"])
-            except ValueError:
-                pass
+        """Environment defaults, overridden by settings stored in SQLite.
+
+        The merge lives in settings.py so `python -m beetdrop` applies the
+        same one. While it was a closure here the CLI saw environment
+        variables only, so every command ran as though the tokens on the
+        Settings page were not configured.
+        """
+        config = apply_stored_settings(base, store.get_settings(),
+                                       music_locked=music_locked,
+                                       video_locked=video_locked)
         # Cookies uploaded through Settings win over the mounted file.
         if uploaded_cookies.is_file() and uploaded_cookies.stat().st_size > 0:
             config.cookies_file = str(uploaded_cookies)

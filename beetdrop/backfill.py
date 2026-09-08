@@ -8,6 +8,7 @@ missing match or a network error is counted and skipped, never fatal.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -28,8 +29,13 @@ from .lyrics import (
 )
 from .matching import normalize_artist
 
-# Leading track (and disc) number on a filename, e.g. "02 - ", "1-02 - ".
-_TRACK_PREFIX = re.compile(r"^(?:\d+-)?\d+\s*[-.]\s*")
+# Leading track (and disc) number on a filename: "02 - ", "1-02 - ", "02. ",
+# and - the common case this missed for a long time - a bare "06 Title" with
+# nothing but a space after the number. Requiring punctuation meant every
+# "NN Title.m4a" in a ripped album was searched for as "06 Chance To Love
+# You More", which no catalogue has. "2-04 Title" was worse: it stripped
+# only the disc part and searched for "04 Title".
+_TRACK_PREFIX = re.compile(r"^(?:\d{1,2}\s*-\s*)?\d{1,3}(?:\s*[-.]\s*|\s+)(?=\S)")
 # Runs of whitespace, which junk tags are full of.
 _WHITESPACE = re.compile(r"\s+")
 # Trailing " (1999)" year on an album folder.
@@ -37,11 +43,13 @@ _YEAR_SUFFIX = re.compile(r"\s*\((?:19|20)\d{2}\)\s*$")
 
 # Audio we tag/file; the video library's .mp4 files are ignored.
 AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
-# No fixed pause between lookups: on a big library it was costing hours
-# to buy politeness the providers never asked for. Apple's 429 backoff
-# handles the one source that does push back, and only when it actually
-# does. Set this above zero to reintroduce a fixed pause.
-REQUEST_SPACING = 0.0
+# Seconds to wait between lookups. This was dropped to 0 to speed up a
+# full-library pass and Apple started returning 429 on a real library, so
+# it is back: running flat out is what provoked the rate limit, and once
+# provoked it blocks the Settings token test too, not just the scan.
+# 0.2 is the value that ran for weeks without complaint. Set
+# LYRICS_REQUEST_SPACING=0 to run flat out anyway.
+REQUEST_SPACING = float(os.environ.get("LYRICS_REQUEST_SPACING", "0.2"))
 
 
 def _noop(*args) -> None:
@@ -216,12 +224,22 @@ def tidy_track_name(title: str, artist: str) -> str:
     cleaned = clean_title(title or "")
     if artist:
         # "<artist> - <track>" is the usual shape; compare loosely so
-        # spacing and case differences do not stop the strip.
-        head = re.match(r"^(.*?)\s+-\s+(.+)$", cleaned)
-        if head:
-            left, right = head.group(1), head.group(2)
-            if normalize_artist(left) == normalize_artist(artist):
-                cleaned = right
+        # spacing and case differences do not stop the strip. The dash
+        # needs no spaces around it: "Blue October-Conversation Via Radio"
+        # is how a lot of ripped files are named.
+        head = re.match(r"^(.*?)\s*[-–—:]\s*(.+)$", cleaned)
+        if head and normalize_artist(head.group(1)) == normalize_artist(artist):
+            cleaned = head.group(2)
+        else:
+            # No separator at all - "Adele I Found A Boy", "Blue October
+            # The Still". Peel words off the front while they still spell
+            # the artist, and never take the whole title.
+            wanted = normalize_artist(artist)
+            words = cleaned.split()
+            for count in range(len(words) - 1, 0, -1):
+                if normalize_artist(" ".join(words[:count])) == wanted:
+                    cleaned = " ".join(words[count:])
+                    break
     return _WHITESPACE.sub(" ", cleaned).strip() or (title or "").strip()
 
 
@@ -356,8 +374,12 @@ def backfill_lyrics(
                 elif deferred == 6:
                     on_detail("deferred: further errors not listed individually")
             elif upgrade:
-                # Only replace when the answer is actually better.
-                if lrc and has_word_timing(lrc):
+                # Only replace when the answer is actually better. Word
+                # timing that runs backwards is not: overwriting a sound
+                # line-level sidecar with it makes the track worse, and
+                # counting it as an upgrade would report a repair that did
+                # not happen.
+                if lrc and has_word_timing(lrc) and not has_backwards_word_timing(lrc):
                     try:
                         write_lyrics_sidecar(path, lrc, overwrite=True)
                         upgraded += 1
