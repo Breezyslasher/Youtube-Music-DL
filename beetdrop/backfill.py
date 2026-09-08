@@ -64,11 +64,16 @@ class LyricsStats:
     line_level: int = 0
     missing: int = 0
     placeholder: int = 0   # generated junk still sitting in the library
+    # Word-level files whose tags run backwards mid-line: they look like
+    # a win in the word_level count but a player highlighting them jumps
+    # about, so they are called out separately. Counted inside word_level.
+    backwards: int = 0
     # Which tracks fall in each bucket, as paths relative to the library.
     # Capped by the caller so a big library cannot flood a response.
     line_level_files: list = field(default_factory=list)
     missing_files: list = field(default_factory=list)
     placeholder_files: list = field(default_factory=list)
+    backwards_files: list = field(default_factory=list)
 
     @property
     def coverage_pct(self) -> float:
@@ -111,6 +116,9 @@ def lyrics_stats(root: Path, sample: int = 50) -> LyricsStats:
             continue
         if has_word_timing(text):
             stats.word_level += 1
+            if has_backwards_word_timing(text):
+                stats.backwards += 1
+                note(stats.backwards_files, path)
         else:
             stats.line_level += 1
             note(stats.line_level_files, path)
