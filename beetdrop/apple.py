@@ -33,6 +33,12 @@ TIMEOUT = 15
 # How far a catalog hit may be from the file's duration to be the same
 # recording. Apple reports milliseconds.
 DURATION_TOLERANCE = 8
+# Back off and retry when Apple returns 429 rather than reporting a miss.
+# There is no fixed pause between lookups, so this is what keeps a
+# full-library scan from running the catalog API too hard.
+THROTTLE_RETRIES = 4
+THROTTLE_BACKOFF = 1.0   # seconds, doubled each retry
+THROTTLE_MAX_WAIT = 30.0
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 _JWT = re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}")
@@ -101,11 +107,31 @@ def fetch_developer_token(force: bool = False) -> str:
 
 
 def _get_json(url, headers, params=None):
-    try:
-        response = requests.get(url, headers=headers, params=params,
-                                timeout=TIMEOUT)
-    except requests.RequestException:
-        return None, 0
+    """One catalog call, retried while Apple is asking us to slow down.
+
+    A library scan runs these back to back, so 429 is a real outcome. It
+    has to be waited out rather than returned: to every caller above,
+    "no data" is indistinguishable from "this track has no lyrics", so a
+    throttled scan would quietly mark thousands of tracks as misses.
+    """
+    delay = THROTTLE_BACKOFF
+    for attempt in range(THROTTLE_RETRIES + 1):
+        try:
+            response = requests.get(url, headers=headers, params=params,
+                                    timeout=TIMEOUT)
+        except requests.RequestException:
+            return None, 0
+        if response.status_code != 429:
+            break
+        if attempt == THROTTLE_RETRIES:
+            return None, 429
+        # Apple usually says how long; fall back to backing off steadily.
+        try:
+            wait = float(response.headers.get("Retry-After", "") or delay)
+        except ValueError:
+            wait = delay
+        time.sleep(min(wait, THROTTLE_MAX_WAIT))
+        delay = min(delay * 2, THROTTLE_MAX_WAIT)
     if not response.ok:
         return None, response.status_code
     try:

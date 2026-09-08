@@ -36,9 +36,11 @@ _YEAR_SUFFIX = re.compile(r"\s*\((?:19|20)\d{2}\)\s*$")
 
 # Audio we tag/file; the video library's .mp4 files are ignored.
 AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
-# A small pause between lookups keeps the lyric providers happy on a big
-# library scan.
-REQUEST_SPACING = 0.2
+# No fixed pause between lookups: on a big library it was costing hours
+# to buy politeness the providers never asked for. Apple's 429 backoff
+# handles the one source that does push back, and only when it actually
+# does. Set this above zero to reintroduce a fixed pause.
+REQUEST_SPACING = 0.0
 
 
 def _noop(*args) -> None:
@@ -353,7 +355,8 @@ def backfill_lyrics(
                     no_match += 1  # write failed; treat as not added
             else:
                 no_match += 1
-            time.sleep(REQUEST_SPACING)
+            if REQUEST_SPACING:
+                time.sleep(REQUEST_SPACING)
         on_detail("%d/%d checked, %d %s" % (
             index + 1, total, upgraded if upgrade else added,
             "upgraded to word-by-word" if upgrade else "lyrics added"))
