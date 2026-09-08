@@ -356,8 +356,12 @@ def backfill_lyrics(
                 elif deferred == 6:
                     on_detail("deferred: further errors not listed individually")
             elif upgrade:
-                # Only replace when the answer is actually better.
-                if lrc and has_word_timing(lrc):
+                # Only replace when the answer is actually better. Word
+                # timing that runs backwards is not: overwriting a sound
+                # line-level sidecar with it makes the track worse, and
+                # counting it as an upgrade would report a repair that did
+                # not happen.
+                if lrc and has_word_timing(lrc) and not has_backwards_word_timing(lrc):
                     try:
                         write_lyrics_sidecar(path, lrc, overwrite=True)
                         upgraded += 1

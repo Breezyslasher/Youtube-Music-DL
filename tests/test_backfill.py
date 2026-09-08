@@ -708,3 +708,47 @@ class TestChainDefersOnlyWhenEmptyHanded:
         with pytest.raises(LyricsUnavailable):
             ly.fetch_synced_lyrics("A", "S", apple_token="t",
                                    word_by_word=True, word_only=True)
+
+
+class TestUpgradeRefusesABadReplacement:
+    """The upgrade pass overwrites an existing sidecar, so what it accepts
+    has to be strictly better. Word timing that rewinds mid-line is not:
+    replacing sound line-level lyrics with it is a regression, and calling
+    it an upgrade reports a repair that never happened."""
+
+    BACKWARDS = "[01:00.42]<01:00.42>Understand <01:01.71>me <01:00.42>(Understand me)"
+    GOOD = "[00:01.00]<00:01.00>Un <00:01.40>der <00:01.90>stand"
+
+    def _run(self, tmp_path, monkeypatch, existing, answer):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        (config.music_root / "A").mkdir(parents=True)
+        track = config.music_root / "A" / "song.opus"
+        track.write_bytes(b"x")
+        track.with_suffix(".lrc").write_text(existing)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: answer)
+        return backfill_lyrics(config, upgrade=True), track
+
+    def test_backwards_answer_is_refused(self, tmp_path, monkeypatch):
+        result, track = self._run(tmp_path, monkeypatch,
+                                  "[00:01.00]plain line", self.BACKWARDS)
+        assert result.upgraded == 0
+        assert result.no_match == 1
+        # The sound line-level sidecar is still there, not overwritten.
+        assert track.with_suffix(".lrc").read_text() == "[00:01.00]plain line"
+
+    def test_a_good_answer_is_still_taken(self, tmp_path, monkeypatch):
+        result, track = self._run(tmp_path, monkeypatch,
+                                  "[00:01.00]plain line", self.GOOD)
+        assert result.upgraded == 1
+        assert track.with_suffix(".lrc").read_text() == self.GOOD
+
+    def test_a_broken_file_is_not_repaired_with_another_broken_one(
+            self, tmp_path, monkeypatch):
+        result, track = self._run(tmp_path, monkeypatch,
+                                  self.BACKWARDS, self.BACKWARDS)
+        assert result.upgraded == 0          # nothing was actually fixed
+        assert track.with_suffix(".lrc").read_text() == self.BACKWARDS
