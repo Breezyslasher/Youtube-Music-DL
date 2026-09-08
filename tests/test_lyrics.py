@@ -10,8 +10,12 @@ from beetdrop.library import write_lyrics_sidecar
 
 
 class FakeResp:
-    def __init__(self, ok=True, data=None):
+    # A real Response always carries a status_code, and the lyrics chain
+    # now reads it to tell "no lyrics" (404) from "ask again later" (5xx,
+    # 429), so the stub has to carry one too.
+    def __init__(self, ok=True, data=None, status=None):
         self.ok = ok
+        self.status_code = status if status is not None else (200 if ok else 404)
         self._data = data or {}
 
     def json(self):
@@ -158,11 +162,16 @@ class TestNameNormalising:
     def test_simplify_title(self, raw, expected):
         assert lyrics_module._simplify_title(raw) == expected
 
-    def test_network_error_is_none(self, monkeypatch):
+    def test_network_error_is_not_reported_as_no_lyrics(self, monkeypatch):
+        """A dead connection used to return None, which every caller read
+        as "this track has no lyrics" - so a scan run with the network
+        down recorded the whole library as missing lyrics and called it a
+        successful run. It has to be distinguishable."""
         def boom(*a, **k):
             raise lyrics_module.requests.RequestException("down")
         monkeypatch.setattr(lyrics_module.requests, "get", boom)
-        assert lyrics_module.fetch_synced_lyrics("A", "S") is None
+        with pytest.raises(lyrics_module.LyricsUnavailable):
+            lyrics_module.fetch_synced_lyrics("A", "S")
 
     def test_missing_fields_no_request(self, monkeypatch):
         called = {"n": 0}

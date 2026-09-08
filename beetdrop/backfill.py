@@ -20,6 +20,7 @@ from .cleaning import clean_title
 from .config import Config
 from .library import write_lyrics_sidecar
 from .lyrics import (
+    LyricsUnavailable,
     fetch_synced_lyrics,
     has_backwards_word_timing,
     has_word_timing,
@@ -55,6 +56,11 @@ class BackfillResult:
     no_match: int   # looked up but no synced lyrics found
     upgraded: int = 0  # line-level sidecars replaced with word-level
     purged: int = 0  # bogus placeholder sidecars deleted first
+    # Tracks a source could not be asked about - rate limits, a rotated
+    # token, a dropped connection. Deliberately not counted as no_match:
+    # these may well have lyrics, and running the pass again picks them
+    # up, so a run that hits many is incomplete rather than finished.
+    deferred: int = 0
 
 
 @dataclass
@@ -303,7 +309,7 @@ def backfill_lyrics(
         files = list(iter_audio_line_level_lyrics(config.music_root) if upgrade
                      else iter_audio_missing_lyrics(config.music_root))
     total = len(files)
-    added = skipped = no_match = upgraded = 0
+    added = skipped = no_match = upgraded = deferred = 0
 
     for index, path in enumerate(files):
         meta = read_track_meta(path)
@@ -335,9 +341,21 @@ def backfill_lyrics(
                     # two Apple calls instead of the full ten-request chain.
                     word_by_word=True if upgrade else config.word_lyrics,
                     word_only=upgrade)
+                unavailable = None
+            except LyricsUnavailable as exc:
+                # Not a miss: nobody could answer. Leave the track alone so
+                # a later run retries it, and say so rather than recording
+                # a "no lyrics found" that is not true.
+                lrc, unavailable = None, exc
             except Exception:
-                lrc = None
-            if upgrade:
+                lrc, unavailable = None, None
+            if unavailable is not None:
+                deferred += 1
+                if deferred <= 5:
+                    on_detail("deferred %s - %s" % (path.name, unavailable))
+                elif deferred == 6:
+                    on_detail("deferred: further errors not listed individually")
+            elif upgrade:
                 # Only replace when the answer is actually better.
                 if lrc and has_word_timing(lrc):
                     try:
@@ -364,4 +382,5 @@ def backfill_lyrics(
             on_progress((index + 1) / total * 100.0)
 
     return BackfillResult(total=total, added=added, skipped=skipped,
-                          no_match=no_match, upgraded=upgraded, purged=purged)
+                          no_match=no_match, upgraded=upgraded, purged=purged,
+                          deferred=deferred)

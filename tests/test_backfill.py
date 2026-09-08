@@ -611,3 +611,100 @@ class TestUpgradeAsksOnlyApple:
         hosts = self._count(word_by_word=True)
         assert any("lrclib" in h for h in hosts)
         assert any("musixmatch" in h for h in hosts)
+
+
+class TestUnreachableIsNotAMiss:
+    """The bug this closes: every failure - a rate limit, a rotated token,
+    a dropped connection - arrived at the scan as the same None a track
+    with genuinely no lyrics produces. A run with the network down
+    recorded the whole library as "no match" and reported success."""
+
+    def _config(self, tmp_path):
+        music = tmp_path / "music"
+        (music / "A").mkdir(parents=True)
+        track = music / "A" / "song.opus"
+        track.write_bytes(b"x")
+        return Config(music_root=music, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c"), track
+
+    def _run(self, tmp_path, monkeypatch, outcome):
+        config, track = self._config(tmp_path)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+
+        def fake(*a, **k):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        return backfill_lyrics(config), track
+
+    def test_unreachable_counts_as_deferred_not_no_match(self, tmp_path, monkeypatch):
+        from beetdrop.lyrics import LyricsUnavailable
+        result, track = self._run(tmp_path, monkeypatch,
+                                  LyricsUnavailable("lrclib returned 503"))
+        assert result.deferred == 1
+        assert result.no_match == 0      # it was never answered
+        assert result.added == 0
+        assert not track.with_suffix(".lrc").exists()
+
+    def test_a_real_miss_is_still_a_miss(self, tmp_path, monkeypatch):
+        result, _ = self._run(tmp_path, monkeypatch, None)
+        assert (result.no_match, result.deferred) == (1, 0)
+
+    def test_the_run_says_it_was_incomplete(self, tmp_path, monkeypatch):
+        from beetdrop.lyrics import LyricsUnavailable
+        config, _ = self._config(tmp_path)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+
+        def boom(*a, **k):
+            raise LyricsUnavailable("Apple returned 429")
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", boom)
+        said = []
+        backfill_lyrics(config, on_detail=said.append)
+        assert any("deferred" in line for line in said), said
+        assert any("429" in line for line in said), said
+
+
+class TestChainDefersOnlyWhenEmptyHanded:
+    def _stub(self, monkeypatch, lrclib=None, apple_exc=None):
+        from beetdrop import lyrics as ly
+        monkeypatch.setattr(ly, "_lrclib", lambda *a, **k: lrclib)
+        monkeypatch.setattr(ly, "_musixmatch", lambda *a, **k: None)
+
+        def fake_apple(*a, **k):
+            if apple_exc:
+                raise apple_exc
+            return None
+        monkeypatch.setattr(ly, "_apple", fake_apple)
+        return ly
+
+    def test_a_hit_wins_over_an_unreachable_source(self, monkeypatch):
+        """One source being down does not matter if another answered."""
+        from beetdrop.lyrics import LyricsUnavailable
+        ly = self._stub(monkeypatch, lrclib="[00:01.00]found",
+                        apple_exc=LyricsUnavailable("Apple 429"))
+        got = ly.fetch_synced_lyrics("A", "S", apple_token="t",
+                                     word_by_word=True)
+        assert got == "[00:01.00]found"
+
+    def test_empty_handed_with_a_source_down_defers(self, monkeypatch):
+        from beetdrop.lyrics import LyricsUnavailable
+        ly = self._stub(monkeypatch, lrclib=None,
+                        apple_exc=LyricsUnavailable("Apple 429"))
+        with pytest.raises(LyricsUnavailable):
+            ly.fetch_synced_lyrics("A", "S", apple_token="t")
+
+    def test_empty_handed_with_every_source_answering_is_a_miss(self, monkeypatch):
+        ly = self._stub(monkeypatch, lrclib=None)
+        assert ly.fetch_synced_lyrics("A", "S", apple_token="t") is None
+
+    def test_word_only_defers_when_apple_is_down(self, monkeypatch):
+        """The upgrade pass asks only Apple, so Apple being down leaves it
+        with no answer at all - that must not read as "no word lyrics"."""
+        from beetdrop.lyrics import LyricsUnavailable
+        ly = self._stub(monkeypatch, apple_exc=LyricsUnavailable("Apple 429"))
+        with pytest.raises(LyricsUnavailable):
+            ly.fetch_synced_lyrics("A", "S", apple_token="t",
+                                   word_by_word=True, word_only=True)

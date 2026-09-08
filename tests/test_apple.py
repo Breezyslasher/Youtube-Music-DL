@@ -589,7 +589,9 @@ class TestStaleDeveloperTokenRefresh:
         monkeypatch.setattr(apple, "fetch_developer_token", fake_fetch)
 
         for _ in range(200):                    # a scan's worth of tracks
-            assert apple.search_song("old", "mut", "us", "A", "T") is None
+            # Surfaced as unavailable, never as "this track has no lyrics".
+            with pytest.raises(apple.AppleUnavailable):
+                apple.search_song("old", "mut", "us", "A", "T")
         assert len(scrapes) == 1, scrapes
 
     def test_another_caller_refreshing_is_reused(self, monkeypatch):

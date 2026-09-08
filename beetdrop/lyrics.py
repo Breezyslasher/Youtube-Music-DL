@@ -21,6 +21,21 @@ from . import apple, musixmatch
 from .matching import base_title, normalize_artist
 from .mb import USER_AGENT
 
+class LyricsUnavailable(Exception):
+    """A source could not be reached, as distinct from having no lyrics.
+
+    The whole chain returns Optional[str], and for a long time every
+    failure - a dead connection, a rate limit, an expired token - arrived
+    at the caller as the same None a track with genuinely no lyrics
+    produces. A scan then recorded thousands of "no match" results and
+    reported success, with nothing to say the run had gone bad. Anything
+    that might succeed on a later run raises this instead.
+    """
+
+
+# "Ask again later" rather than "this track has no lyrics".
+RETRYABLE_STATUS = (408, 425, 429, 500, 502, 503, 504)
+
 LRCLIB_GET = "https://lrclib.net/api/get"
 LRCLIB_SEARCH = "https://lrclib.net/api/search"
 TIMEOUT = 10
@@ -115,8 +130,10 @@ def _get_json(url: str, params: dict):
     try:
         response = requests.get(url, params=params, timeout=TIMEOUT,
                                 headers={"User-Agent": USER_AGENT})
-    except requests.RequestException:
-        return None
+    except requests.RequestException as exc:
+        raise LyricsUnavailable("could not reach %s: %s" % (url, exc)) from exc
+    if response.status_code in RETRYABLE_STATUS:
+        raise LyricsUnavailable("%s returned %s" % (url, response.status_code))
     if not response.ok:  # 404 = no lyrics known; normal
         return None
     try:
@@ -223,6 +240,8 @@ def _musixmatch(artist, title, album, duration_seconds, token):
         return None
     try:
         return musixmatch.fetch_synced(token, artist, title, duration_seconds)
+    except musixmatch.MusixmatchUnavailable as exc:
+        raise LyricsUnavailable(str(exc)) from exc
     except Exception:
         return None
 
@@ -234,6 +253,8 @@ def _apple(artist, title, duration_seconds, token, storefront, word_by_word):
         return apple.fetch_synced(token, artist, title, duration_seconds,
                                   storefront=storefront or "us",
                                   word_by_word=word_by_word)
+    except apple.AppleUnavailable as exc:
+        raise LyricsUnavailable(str(exc)) from exc
     except Exception:
         return None
 
@@ -250,6 +271,10 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                         word_by_word: bool = False,
                         word_only: bool = False) -> Optional[str]:
     """The LRC text for this track, or None when no *synced* lyrics exist.
+
+    Raises LyricsUnavailable when nothing was found *and* some source
+    could not be reached, so a caller can tell a track that has no lyrics
+    from one whose sources were down and retry only the latter.
 
     `provider` picks which source is tried first; the others follow as
     fallbacks. Musixmatch and Apple are only attempted when their token is
@@ -268,19 +293,36 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
         return None
 
     memo = {}
+    # Sources that could not be asked, as opposed to ones that answered
+    # "nothing". If we end up empty-handed and any source is in here, the
+    # track is unresolved rather than lyric-less, and saying so is the
+    # whole point: only then can a caller retry it later.
+    unreachable = []
 
     def source(name):
         """Each source is asked at most once per track."""
         if name not in memo:
-            if name == "lrclib":
-                memo[name] = _lrclib(artist, title, album, duration_seconds)
-            elif name == "musixmatch":
-                memo[name] = _musixmatch(artist, title, album,
-                                         duration_seconds, musixmatch_token)
-            else:
-                memo[name] = _apple(artist, title, duration_seconds,
-                                    apple_token, apple_storefront, word_by_word)
+            try:
+                if name == "lrclib":
+                    memo[name] = _lrclib(artist, title, album, duration_seconds)
+                elif name == "musixmatch":
+                    memo[name] = _musixmatch(artist, title, album,
+                                             duration_seconds, musixmatch_token)
+                else:
+                    memo[name] = _apple(artist, title, duration_seconds,
+                                        apple_token, apple_storefront,
+                                        word_by_word)
+            except LyricsUnavailable as exc:
+                # Keep asking the rest: another source may still have it,
+                # and a hit is a better outcome than a deferral.
+                unreachable.append("%s (%s)" % (name, exc))
+                memo[name] = None
         return memo[name]
+
+    def give_up():
+        if unreachable:
+            raise LyricsUnavailable("; ".join(unreachable))
+        return None
 
     def usable(lrc):
         # Never accept generated placeholder text, whatever returned it.
@@ -298,7 +340,7 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
     if word_only:
         # Nothing else can answer this question, so stop here rather than
         # walk the whole chain for a result the caller will throw away.
-        return None
+        return give_up()
 
     primary = provider if provider in PROVIDERS else "lrclib"
     order = [primary] + [name for name in PROVIDERS if name != primary]
@@ -306,4 +348,4 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
         lrc = source(name)
         if usable(lrc):
             return lrc
-    return None
+    return give_up()
