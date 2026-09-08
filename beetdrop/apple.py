@@ -97,52 +97,94 @@ def _headers(developer_token: str, media_user_token: str) -> dict:
     }
 
 
+def _candidate_tokens() -> list:
+    """Every distinct JWT the web player ships, in the order found.
+
+    There are several, for different Apple services, and only one of them
+    is accepted by the catalog API. Which comes first is not stable: the
+    player is served from a CDN and the bundles are rebuilt, so taking
+    the first match works until the day it does not.
+    """
+    found, seen = [], set()
+
+    def add(text: str) -> None:
+        for token in _JWT.findall(text):
+            if token not in seen:
+                seen.add(token)
+                found.append(token)
+
+    response = requests.get(WEB_PLAYER, headers={"User-Agent": UA},
+                            timeout=TIMEOUT)
+    if response.status_code == 429:
+        _record_error(WEB_PLAYER, response)
+        hold_off(_retry_after(response, THROTTLE_BACKOFF))
+        raise AppleError(
+            "music.apple.com is rate limiting us (429) - wait a few "
+            "minutes before trying again.\n%s" % describe_last_error())
+    if not response.ok:
+        _record_error(WEB_PLAYER, response)
+        raise AppleError("music.apple.com returned %s\n%s" % (
+            response.status_code, describe_last_error()))
+    add(response.text)
+    for path in _ASSET.findall(response.text)[:12]:
+        asset = requests.get("https://music.apple.com" + path,
+                             headers={"User-Agent": UA}, timeout=TIMEOUT)
+        if asset.ok:
+            add(asset.text)
+    return found
+
+
+def _token_works(token: str) -> bool:
+    """Whether the catalog API accepts this token.
+
+    One cheap public search, no retries and no backoff: a rejection here
+    is the answer, not something to wait out.
+    """
+    try:
+        response = requests.get(
+            SEARCH_URL % "us",
+            headers={"Authorization": "Bearer " + token,
+                     "Origin": "https://music.apple.com",
+                     "Referer": "https://music.apple.com/",
+                     "User-Agent": UA},
+            params={"term": "a", "types": "songs", "limit": "1"},
+            timeout=TIMEOUT)
+    except requests.RequestException:
+        return False
+    return response.status_code == 200
+
+
 def fetch_developer_token(force: bool = False) -> str:
-    """The Music web player's public developer token, cached."""
+    """A developer token the catalog API actually accepts, cached.
+
+    This used to take the first JWT on the page and hope. On a real
+    library that turned out to be the AMPWebPlay token, which the catalog
+    API refuses - with 429 "Request is forbidden", which reads exactly
+    like a rate limit and is not one. Hours were spent waiting out a
+    quota that did not exist. So each candidate is now tried, and the one
+    that answers is the one we keep.
+    """
     with _dev_lock:
         fresh = (not force and _dev_token["value"]
                  and time.time() - _dev_token["at"] < _DEV_TOKEN_TTL)
         if fresh:
             return _dev_token["value"]
     try:
-        _await_throttle()
-        response = requests.get(WEB_PLAYER, headers={"User-Agent": UA},
-                                timeout=TIMEOUT)
-        if response.status_code == 429:
-            # Scraping the player is the heaviest thing we do to Apple, so
-            # a 429 here holds the catalog calls back as well.
-            _record_error(WEB_PLAYER, response)
-            hold_off(_retry_after(response, THROTTLE_BACKOFF))
-            raise AppleError(
-                "music.apple.com is rate limiting us (429) - wait a few "
-                "minutes before trying again.\n%s" % describe_last_error())
-        if not response.ok:
-            _record_error(WEB_PLAYER, response)
-            raise AppleError("music.apple.com returned %s\n%s" % (
-                response.status_code, describe_last_error()))
-        html = response.text
-        token = ""
-        found = _JWT.search(html)
-        if found:
-            token = found.group(0)
-        else:
-            for path in _ASSET.findall(html)[:12]:
-                asset = requests.get("https://music.apple.com" + path,
-                                     headers={"User-Agent": UA}, timeout=TIMEOUT)
-                if not asset.ok:
-                    continue
-                found = _JWT.search(asset.text)
-                if found:
-                    token = found.group(0)
-                    break
+        candidates = _candidate_tokens()
     except requests.RequestException as exc:
         raise AppleError("could not reach Apple Music: %s" % exc) from exc
-    if not token:
+    if not candidates:
         raise AppleError("no developer token found in the Music web player")
-    with _dev_lock:
-        _dev_token["value"] = token
-        _dev_token["at"] = time.time()
-    return token
+    for token in candidates:
+        if _token_works(token):
+            with _dev_lock:
+                _dev_token["value"] = token
+                _dev_token["at"] = time.time()
+            return token
+    raise AppleError(
+        "found %d developer token(s) in the Music web player and the catalog "
+        "API refused every one. Apple may have changed what it requires; "
+        "run 'beetdrop apple-raw' to see the response." % len(candidates))
 
 
 def _retry_after(response, fallback: float) -> float:

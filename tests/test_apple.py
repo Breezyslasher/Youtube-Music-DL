@@ -960,3 +960,63 @@ class TestNoShortcutOnTheLyricsFlag:
         result, calls = self._run(monkeypatch, {
             "durationInMillis": 200000, "hasTimeSyncedLyrics": True})
         assert result and any("syllable-lyrics" in url for url in calls)
+
+
+class TestTokenIsValidatedNotGuessed:
+    """The web player ships several JWTs for different Apple services and
+    only one is accepted by the catalog API. Taking the first match found
+    the AMPWebPlay token, which the catalog API refuses with 429 "Request
+    is forbidden" - indistinguishable from a rate limit, and hours were
+    spent waiting out a quota that never existed."""
+
+    PAGE = ('<html><script src="/assets/index~abc.js"></script>'
+            'eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.'
+            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBB'
+            '</html>')
+    BAD = ("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9."
+           "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBB")
+    GOOD = ("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1Nik9."
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC.DDDDDDDDDDDDDDDDDDDDDDDD")
+
+    def setup_method(self):
+        apple._dev_token["value"] = ""
+        apple._dev_token["at"] = 0.0
+        apple._throttle_until = 0.0
+
+    def _serve(self, monkeypatch, accepted):
+        """The page offers BAD then GOOD; only `accepted` searches 200."""
+        asset = "junk " + self.GOOD
+
+        def fake_get(url, headers=None, params=None, **kw):
+            if "music.apple.com/us/browse" in url:
+                return FakeResp(text=self.PAGE, ok=True, status=200)
+            if url.endswith(".js"):
+                return FakeResp(text=asset, ok=True, status=200)
+            token = (headers or {}).get("Authorization", "")
+            if token == "Bearer " + accepted:
+                return FakeResp({"results": {}}, ok=True, status=200)
+            return FakeResp(ok=False, status=429,
+                            text='{"errors":[{"title":"Too Many Requests"}]}')
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+
+    def test_the_refused_first_token_is_passed_over(self, monkeypatch):
+        self._serve(monkeypatch, accepted=self.GOOD)
+        assert apple.fetch_developer_token() == self.GOOD
+
+    def test_a_working_first_token_is_still_used(self, monkeypatch):
+        self._serve(monkeypatch, accepted=self.BAD)
+        assert apple.fetch_developer_token() == self.BAD
+
+    def test_the_accepted_token_is_cached(self, monkeypatch):
+        self._serve(monkeypatch, accepted=self.GOOD)
+        apple.fetch_developer_token()
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: pytest.fail("re-scraped"))
+        assert apple.fetch_developer_token() == self.GOOD
+
+    def test_every_token_refused_says_so_plainly(self, monkeypatch):
+        self._serve(monkeypatch, accepted="nothing-matches-this")
+        with pytest.raises(apple.AppleError) as caught:
+            apple.fetch_developer_token()
+        # Not reported as a rate limit, which is what sent us wrong.
+        assert "refused every one" in str(caught.value)
