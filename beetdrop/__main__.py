@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -106,9 +107,17 @@ def cmd_scan_lyrics(args, config: Config) -> int:
         stats = lyrics_stats(config.music_root, sample=0)
         bucket = {"line": stats.line_level_files,
                   "missing": stats.missing_files,
-                  "placeholder": stats.placeholder_files}[args.list]
-        for name in bucket:
-            print(name)
+                  "placeholder": stats.placeholder_files,
+                  "broken": stats.backwards_files}[args.list]
+        try:
+            for name in bucket:
+                print(name)
+            sys.stdout.flush()
+        except BrokenPipeError:
+            # `... --list broken | head` closes the pipe early. That is the
+            # intended use, not an error, so exit quietly - and detach
+            # stdout so the interpreter does not retry the flush at exit.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
     if args.stats:
         s = lyrics_stats(config.music_root)
@@ -118,6 +127,9 @@ def cmd_scan_lyrics(args, config: Config) -> int:
             s.word_level, s.word_pct))
         print("  line-level:   %d" % s.line_level)
         print("  no lyrics:    %d" % s.missing)
+        if s.backwards:
+            print("  of the word-by-word, %d have word timing that runs "
+                  "backwards mid-line and need --upgrade" % s.backwards)
         if s.placeholder:
             print("  placeholder junk still present: %d" % s.placeholder)
         return 0
@@ -263,9 +275,10 @@ def main(argv=None) -> int:
                             help="fetch synced lyrics for library tracks missing them")
     p_scan.add_argument("--refresh", action="store_true",
                         help="delete placeholder .lrc files first, then re-fetch them")
-    p_scan.add_argument("--list", choices=("line", "missing", "placeholder"),
+    p_scan.add_argument("--list", choices=("line", "missing", "placeholder", "broken"),
                         help="print every track in that bucket, one per line: "
-                             "line = has lyrics but no word-by-word")
+                             "line = has lyrics but no word-by-word, "
+                             "broken = word timing that runs backwards mid-line")
     p_scan.add_argument("--stats", action="store_true",
                         help="report lyric coverage and how much is word-by-word, "
                              "without fetching anything")

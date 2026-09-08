@@ -522,6 +522,28 @@ class TestStatsNameTheTracks:
         # A sound word-level track is in no bucket.
         assert "A/word.opus" not in stats.line_level_files
 
+    def test_backwards_word_timing_is_called_out(self, tmp_path):
+        """A sidecar whose word tags rewind counts as word-level - it does
+        carry per-word timing - but it is broken, so the report has to say
+        so rather than let it pass as a win. Real shape, from a library
+        filed before the background-vocal fix."""
+        root = self._library(tmp_path)
+        broken = root / "A" / "broken.opus"
+        broken.write_bytes(b"x")
+        broken.with_suffix(".lrc").write_text(
+            "[01:00.42]<01:00.42>Understand <01:01.71>me "
+            "<01:00.42>(Understand me)")
+        sound = root / "A" / "sound.opus"
+        sound.write_bytes(b"x")
+        sound.with_suffix(".lrc").write_text(
+            "[00:01.00]<00:01.00>Un <00:01.40>der <00:01.90>stand")
+
+        stats = backfill.lyrics_stats(root)
+        assert stats.word_level == 2          # both do have word timing
+        assert stats.backwards == 1           # but one of them rewinds
+        assert stats.backwards_files == ["A/broken.opus"]
+        assert stats.line_level == 0
+
     def test_sample_caps_the_lists(self, tmp_path):
         root = self._library(tmp_path)
         for i in range(10):

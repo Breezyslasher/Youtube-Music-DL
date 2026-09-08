@@ -306,7 +306,19 @@
         <template v-if="lyricsStats.placeholder">
           {{ lyricsStats.placeholder }} still look like placeholder junk.
         </template>
+        <template v-if="lyricsStats.backwards">
+          {{ lyricsStats.backwards }} of the word-by-word ones have timing that
+          jumps backwards mid-line &mdash; run the upgrade pass to repair them.
+        </template>
       </p>
+      <details v-if="lyricsStats && lyricsStats.backwards_files.length" class="joblog">
+        <summary>{{ lyricsStats.backwards }} with backwards word timing</summary>
+        <pre>{{ lyricsStats.backwards_files.join('\n') }}</pre>
+        <p class="note" v-if="lyricsStats.backwards > lyricsStats.backwards_files.length">
+          Showing the first {{ lyricsStats.backwards_files.length }}. For the
+          full list: <code>scan-lyrics --list broken</code>
+        </p>
+      </details>
       <details v-if="lyricsStats && lyricsStats.line_level_files.length" class="joblog">
         <summary>{{ lyricsStats.line_level }} without word-by-word</summary>
         <pre>{{ lyricsStats.line_level_files.join('\n') }}</pre>
@@ -333,10 +345,11 @@
         {{ scanningLyrics ? 'Starting...' : 'Upgrade existing lyrics to word-by-word' }}
       </button>
       <p class="note">
-        Upgrade revisits tracks whose .lrc has no per-word timing and
-        replaces it only where Apple has a word-level version - the one
-        pass that overwrites an existing sidecar, and only ever with the
-        richer form of the same lyrics. Needs an Apple token.
+        Upgrade revisits tracks whose .lrc has no per-word timing, and
+        tracks whose word timing jumps backwards mid-line, and replaces
+        the sidecar only where Apple has a good word-level version - the
+        one pass that overwrites an existing sidecar, and only ever with
+        the richer form of the same lyrics. Needs an Apple token.
       </p>
       <p class="note">
         Re-fetch deletes placeholder .lrc files first - generated junk with
