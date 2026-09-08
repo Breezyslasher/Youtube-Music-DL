@@ -195,6 +195,88 @@ def estimate_word_coverage(config: Config, sample: int = 100,
 
 
 @dataclass
+class SkipCheck:
+    """Whether Apple's hasTimeSyncedLyrics flag can be trusted to skip a
+    track without asking for its lyrics.
+
+    The flag is read off an anonymous catalog search, and the saving is
+    real - one request instead of two - but the whole thing rests on the
+    flag being accurate without an account, which was never verified.
+    A single track that Apple flags false and then serves lyrics for
+    means the skip is silently discarding lyrics, and must come out.
+    """
+    searched: int = 0        # tracks looked up
+    flagged_false: int = 0   # of those, ones Apple said have no synced lyrics
+    had_lyrics: int = 0      # of those, ones that returned lyrics anyway
+    had_word: int = 0        # of those, ones with word timing
+    deferred: int = 0
+    wrong_examples: list = field(default_factory=list)
+
+    @property
+    def flag_is_wrong(self) -> bool:
+        return self.had_lyrics > 0
+
+    @property
+    def wrong_pct(self) -> float:
+        return (100.0 * self.had_lyrics / self.flagged_false
+                if self.flagged_false else 0.0)
+
+
+def verify_skip_flag(config: Config, sample: int = 30,
+                     max_searches: int = 400,
+                     on_detail: Callable[[str], None] = _noop) -> SkipCheck:
+    """Fetch lyrics for tracks Apple says have none, and see if it lied.
+
+    Read-only and deliberately wasteful: it makes exactly the request the
+    skip exists to avoid, because that is the only way to find out
+    whether avoiding it loses anything.
+    """
+    from . import apple
+
+    result = SkipCheck()
+    storefront = config.apple_storefront or "us"
+    for path in iter_audio_line_level_lyrics(config.music_root):
+        if result.flagged_false >= sample or result.searched >= max_searches:
+            break
+        artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
+        if not artist or not title:
+            p_artist, p_title, _ = meta_from_path(path, config.music_root)
+            artist, title = artist or p_artist, title or p_title
+        title = tidy_track_name(title, artist)
+        if not (artist and title):
+            continue
+        result.searched += 1
+        try:
+            developer = apple.fetch_developer_token()
+            song = apple.search_song_row(developer, storefront, artist, title,
+                                         duration)
+            if song is None or apple.has_synced_lyrics(song) is not False:
+                continue
+            result.flagged_false += 1
+            # The request the skip would have avoided.
+            ttml = apple.fetch_ttml(developer, config.apple_token, storefront,
+                                    song.get("id"))
+            if ttml:
+                result.had_lyrics += 1
+                word = apple.is_word_level(ttml)
+                if word:
+                    result.had_word += 1
+                if len(result.wrong_examples) < 20:
+                    result.wrong_examples.append("%s - %s (%s)" % (
+                        artist, title, "word-by-word" if word else "line-level"))
+        except Exception as exc:
+            result.deferred += 1
+            if result.deferred <= 3:
+                on_detail("deferred: %s" % exc)
+        if REQUEST_SPACING:
+            time.sleep(REQUEST_SPACING)
+        on_detail("%d searched, %d flagged 'no synced lyrics', %d of those "
+                  "had lyrics anyway" % (result.searched, result.flagged_false,
+                                         result.had_lyrics))
+    return result
+
+
+@dataclass
 class BackfillResult:
     total: int      # audio files found without a .lrc sidecar
     added: int      # sidecars written

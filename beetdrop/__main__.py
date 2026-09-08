@@ -497,6 +497,44 @@ def cmd_apple_explore(args, config: Config) -> int:
     return 0
 
 
+def cmd_verify_skip(args, config: Config) -> int:
+    """Check whether Apple's has-synced-lyrics flag can be trusted.
+
+    fetch_synced skips the lyrics request when the catalog search says a
+    track has no synced lyrics. That halves the cost, and rests entirely
+    on the flag being accurate on an anonymous search - which was assumed
+    from one working example, not established. This makes the skipped
+    request anyway and reports whether anything was being lost.
+    """
+    from .backfill import verify_skip_flag
+
+    if not config.apple_token:
+        print("error: no Apple media-user-token configured", file=sys.stderr)
+        return 1
+    check = verify_skip_flag(config, sample=args.sample,
+                             on_detail=lambda text: print(text))
+    print()
+    if not check.flagged_false:
+        print("Apple did not flag any of the %d tracks searched as having no "
+              "synced lyrics, so the skip never fired here and this says "
+              "nothing either way. Try a larger --sample." % check.searched)
+        return 0
+    print("%d of %d tracks searched were flagged 'no synced lyrics'."
+          % (check.flagged_false, check.searched))
+    if not check.flag_is_wrong:
+        print("Every one of them really had none: the flag is trustworthy on "
+              "an anonymous search, and the skip is safe.")
+        return 0
+    print("%d of those %d had lyrics anyway (%.0f%%), %d of them word-by-word."
+          % (check.had_lyrics, check.flagged_false, check.wrong_pct,
+             check.had_word))
+    print("The flag is NOT trustworthy and the skip is losing lyrics. "
+          "It should be removed.")
+    for line in check.wrong_examples:
+        print("    flagged as having none, actually had: %s" % line)
+    return 3
+
+
 def cmd_serve(args, config: Config) -> int:
     import uvicorn
 
@@ -586,6 +624,15 @@ def main(argv=None) -> int:
                            help="how many files to check for ISRC tags "
                                 "(default 300; 0 for the whole library)")
     p_explore.set_defaults(func=cmd_apple_explore)
+
+    p_verify = sub.add_parser(
+        "verify-skip",
+        help="check whether Apple's has-synced-lyrics flag is accurate, "
+             "since a wrong flag means the lyrics fetch is being skipped "
+             "for tracks that do have lyrics")
+    p_verify.add_argument("--sample", type=int, default=30,
+                          help="how many flagged tracks to verify (default 30)")
+    p_verify.set_defaults(func=cmd_verify_skip)
 
     p_serve = sub.add_parser("serve", help="run the web API")
     p_serve.add_argument("--host", default="0.0.0.0")

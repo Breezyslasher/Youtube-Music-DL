@@ -1023,3 +1023,70 @@ class TestIsrcReading:
         (root / "three.opus").write_bytes(b"x")     # unreadable, no ISRC
         with_isrc, checked = backfill.isrc_coverage(root)
         assert (with_isrc, checked) == (2, 3)
+
+
+class TestVerifySkipFlag:
+    """fetch_synced skips the lyrics request when Apple's search says a
+    track has no synced lyrics. That rests on the flag being accurate on
+    an anonymous search - assumed from one working example, never
+    established. This check makes the skipped request anyway."""
+
+    def _library(self, tmp_path, count=20):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        for i in range(count):
+            track = config.music_root / "A" / ("t%02d.opus" % i)
+            track.write_bytes(b"x")
+            track.with_suffix(".lrc").write_text("[00:01.00]plain")
+        return config
+
+    def _stub(self, monkeypatch, flagged_false, ttml):
+        from beetdrop import apple
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda force=False: "d")
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", p.stem, "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr(apple, "search_song_row", lambda *a, **k: {
+            "id": "1",
+            "attributes": {"hasTimeSyncedLyrics": not flagged_false}})
+        monkeypatch.setattr(apple, "fetch_ttml", lambda *a, **k: ttml)
+        monkeypatch.setattr(apple, "is_word_level", lambda t: "Word" in (t or ""))
+
+    def test_a_lying_flag_is_caught(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=True, ttml="<tt Word/>")
+        check = backfill.verify_skip_flag(config, sample=5)
+        assert check.flagged_false == 5
+        assert check.had_lyrics == 5 and check.had_word == 5
+        assert check.flag_is_wrong
+        assert check.wrong_examples
+
+    def test_an_honest_flag_clears_the_skip(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=True, ttml=None)
+        check = backfill.verify_skip_flag(config, sample=5)
+        assert check.flagged_false == 5
+        assert check.had_lyrics == 0
+        assert not check.flag_is_wrong
+
+    def test_tracks_apple_never_flags_are_not_counted(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=False, ttml="<tt Word/>")
+        check = backfill.verify_skip_flag(config, sample=5, max_searches=10)
+        # Nothing was flagged, so the check has nothing to say either way.
+        assert check.flagged_false == 0 and check.had_lyrics == 0
+        assert not check.flag_is_wrong
+
+    def test_the_search_budget_is_bounded(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path, count=50)
+        self._stub(monkeypatch, flagged_false=False, ttml=None)
+        check = backfill.verify_skip_flag(config, sample=30, max_searches=7)
+        assert check.searched <= 7
+
+    def test_nothing_is_written(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=True, ttml="<tt Word/>")
+        backfill.verify_skip_flag(config, sample=5)
+        for lrc in (config.music_root / "A").glob("*.lrc"):
+            assert lrc.read_text() == "[00:01.00]plain"
