@@ -737,3 +737,66 @@ class TestErrorIsReportedInFull:
         assert result["ok"] is False
         assert "Rate limit exceeded" in result["detail"]
         assert "429" in result["detail"]
+
+
+class TestWaitsMatchApplesRealResponse:
+    """Modelled on an actual amp-api 429:
+
+        Server: daiquiri/5, Via: 1.1 varnish, no Retry-After
+        {"title":"Too Many Requests","detail":"Request is forbidden",
+         "status":"429","code":"42900"}
+
+    Apple states no wait at all, so what we guess is what governs."""
+
+    class NoRetryAfter:
+        status_code = 429
+        ok = False
+        headers = {"Server": "daiquiri/5", "Via": "1.1 varnish"}
+        text = ('{"errors":[{"title":"Too Many Requests",'
+                '"detail":"Request is forbidden","code":"42900"}]}')
+
+    def setup_method(self):
+        apple._throttle_until = 0.0
+
+    def teardown_method(self):
+        apple._throttle_until = 0.0
+
+    def test_no_retry_after_still_means_a_real_pause(self):
+        # It used to fall back to the first retry delay - about a second -
+        # so the whole budget was ~15s against a limit lasting far longer.
+        assert apple._retry_after(self.NoRetryAfter(),
+                                  apple.THROTTLE_BACKOFF) >= apple.THROTTLE_BLIND_WAIT
+
+    def test_a_stated_wait_is_honoured_beyond_one_sleep(self):
+        class Stated(self.NoRetryAfter):
+            headers = {"Retry-After": "120"}
+        # Capping this at the single-sleep limit silently ignored most of
+        # what Apple asked for.
+        assert apple._retry_after(Stated(), apple.THROTTLE_BACKOFF) == 120
+
+    def test_an_absurd_wait_is_capped(self):
+        class Forever(self.NoRetryAfter):
+            headers = {"Retry-After": "999999"}
+        assert apple._retry_after(Forever(), 1.0) == apple.THROTTLE_MAX_HOLD
+
+    def test_the_whole_deadline_is_waited_out_not_just_one_chunk(self, monkeypatch):
+        """The bug: one sleep of at most MAX_WAIT, then the call went
+        through anyway - a 60s hold paused 30s and walked back in."""
+        slept = []
+        now = [1000.0]
+        monkeypatch.setattr(apple.time, "time", lambda: now[0])
+
+        def fake_sleep(seconds):
+            slept.append(seconds)
+            now[0] += seconds        # a sleep really does move the clock
+        monkeypatch.setattr(apple.time, "sleep", fake_sleep)
+
+        apple.hold_off(90.0)
+        apple._await_throttle()
+        assert sum(slept) >= 90                       # the full hold
+        assert max(slept) <= apple.THROTTLE_MAX_WAIT  # in interruptible chunks
+
+    def test_a_sleep_that_does_not_advance_cannot_spin_forever(self, monkeypatch):
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        apple.hold_off(apple.THROTTLE_MAX_HOLD)
+        apple._await_throttle()   # returns rather than hanging
