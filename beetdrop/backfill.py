@@ -366,6 +366,58 @@ def read_track_meta(path: Path):
     return (first("artist"), first("title"), first("album"), duration)
 
 
+def read_isrc(path: Path) -> str:
+    """The recording's ISRC from its tags, or "".
+
+    An ISRC names one exact recording, so a catalogue lookup by ISRC
+    cannot return the wrong version the way a text search can. Every
+    format spells it differently and none of them consistently: MP3 uses
+    the TSRC frame, Vorbis/FLAC a plain ISRC comment, and MP4 has no
+    standard atom at all, only iTunes' freeform one.
+    """
+    try:
+        audio = mutagen.File(str(path))
+    except Exception:
+        return ""
+    if audio is None:
+        return ""
+    tags = getattr(audio, "tags", None)
+    if not tags:
+        return ""
+
+    def clean(value) -> str:
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "ignore")
+        return str(value).strip().replace("-", "").upper()
+
+    for key in ("TSRC", "ISRC", "isrc",
+                "----:com.apple.iTunes:ISRC", "----:com.apple.iTunes:isrc"):
+        try:
+            if key in tags:
+                found = clean(tags[key])
+                if found:
+                    return found
+        except Exception:
+            continue
+    return ""
+
+
+def isrc_coverage(root: Path, limit: int = 0) -> tuple:
+    """(with_isrc, checked) across the library's audio files."""
+    with_isrc = checked = 0
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        checked += 1
+        if read_isrc(path):
+            with_isrc += 1
+        if limit and checked >= limit:
+            break
+    return with_isrc, checked
+
+
 def meta_from_path(path: Path, root: Path):
     """Best-effort (artist, title, album) from the folder layout and file
     name when the tags don't carry them. Understands Beetdrop's own layout

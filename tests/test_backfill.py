@@ -943,3 +943,60 @@ class TestWordCoverageEstimate:
         backfill.estimate_word_coverage(config, sample=10, seed=1)
         for lrc in (config.music_root / "A").glob("*.lrc"):
             assert lrc.read_text() == "[00:01.00]plain"   # untouched
+
+
+class TestIsrcReading:
+    """An ISRC names one exact recording, so a lookup by it cannot return
+    the wrong version the way a text search can. Every format spells the
+    tag differently and MP4 has no standard atom at all, so the reader
+    has to know all of them or it reports a library as having none."""
+
+    def _flac(self, tmp_path, isrc):
+        pytest.importorskip("mutagen.flac")
+        import subprocess
+        path = tmp_path / "t.flac"
+        subprocess.run(["ffmpeg", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=1", str(path),
+                        "-y", "-loglevel", "error"], check=True, timeout=60)
+        from mutagen.flac import FLAC
+        audio = FLAC(str(path))
+        audio["ISRC"] = isrc
+        audio.save()
+        return path
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_reads_a_vorbis_isrc(self, tmp_path):
+        path = self._flac(tmp_path, "GBAYE0601498")
+        assert backfill.read_isrc(path) == "GBAYE0601498"
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_dashes_and_case_are_normalised(self, tmp_path):
+        # Taggers write "gb-aye-06-01498"; Apple wants the bare form.
+        path = self._flac(tmp_path, "gb-aye-06-01498")
+        assert backfill.read_isrc(path) == "GBAYE0601498"
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_no_isrc_is_empty_not_an_error(self, tmp_path):
+        import subprocess
+        path = tmp_path / "bare.flac"
+        subprocess.run(["ffmpeg", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=1", str(path),
+                        "-y", "-loglevel", "error"], check=True, timeout=60)
+        assert backfill.read_isrc(path) == ""
+
+    def test_an_unreadable_file_is_empty_not_an_error(self, tmp_path):
+        path = tmp_path / "junk.mp3"
+        path.write_bytes(b"not audio")
+        assert backfill.read_isrc(path) == ""
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_coverage_counts_across_the_library(self, tmp_path):
+        root = tmp_path / "m"
+        root.mkdir()
+        tagged = self._flac(tmp_path, "GBAYE0601498")
+        import shutil
+        shutil.copy(tagged, root / "one.flac")
+        shutil.copy(tagged, root / "two.flac")
+        (root / "three.opus").write_bytes(b"x")     # unreadable, no ISRC
+        with_isrc, checked = backfill.isrc_coverage(root)
+        assert (with_isrc, checked) == (2, 3)

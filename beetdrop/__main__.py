@@ -325,6 +325,128 @@ def cmd_apple_raw(args, config: Config) -> int:
     return 0
 
 
+def cmd_apple_explore(args, config: Config) -> int:
+    """Test whether Apple offers a cheaper route than search-then-fetch.
+
+    An upgrade costs two calls per track: a text search for the song id,
+    then the lyrics fetch. Both halves might be improvable - the search
+    replaced by an exact ISRC lookup, and either half batched across many
+    songs - but only Apple can say which of those it actually supports.
+    So ask it, against the real token, and report what came back.
+    """
+    import requests
+
+    from . import apple
+    from .backfill import (AUDIO_EXTS, isrc_coverage, read_isrc,
+                           read_track_meta, tidy_track_name)
+
+    if not config.apple_token:
+        print("error: no Apple media-user-token configured", file=sys.stderr)
+        return 1
+    storefront = config.apple_storefront or "us"
+    try:
+        developer = apple.fetch_developer_token()
+    except apple.AppleError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    headers = apple._headers(developer, config.apple_token)
+
+    def call(label: str, url: str, params=None) -> dict:
+        try:
+            response = requests.get(url, headers=headers, params=params,
+                                    timeout=apple.TIMEOUT)
+        except Exception as exc:
+            print("  %-46s request failed: %s" % (label, exc))
+            return {}
+        ok = response.status_code == 200
+        print("  %-46s HTTP %s" % (label, response.status_code))
+        if not ok:
+            print("      %s" % (response.text or "")[:200])
+            return {}
+        try:
+            return response.json() or {}
+        except ValueError:
+            return {}
+
+    # 1. How many files could even use an ISRC lookup.
+    print("== ISRC tags in your library ==")
+    with_isrc, checked = isrc_coverage(config.music_root, limit=args.sample)
+    print("  %d of %d files sampled carry an ISRC (%.0f%%)" % (
+        with_isrc, checked, 100.0 * with_isrc / checked if checked else 0))
+    if not with_isrc:
+        print("  -> an ISRC lookup cannot help this library")
+
+    # 2. Collect real material to probe with: song ids via the normal
+    #    search, and an ISRC from a tagged file.
+    ids, isrc = [], ""
+    for path in sorted(config.music_root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        if not isrc:
+            isrc = read_isrc(path)
+        artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
+        if artist and title and len(ids) < 3:
+            found = apple.search_song(developer, config.apple_token, storefront,
+                                      artist, tidy_track_name(title, artist),
+                                      duration)
+            if found:
+                ids.append(found)
+        if len(ids) >= 3 and isrc:
+            break
+    if not ids:
+        print("\ncould not resolve any song ids to probe with")
+        return 1
+    print("\nprobing with song ids %s%s" % (
+        ", ".join(ids), (" and ISRC %s" % isrc) if isrc else " (no ISRC found)"))
+
+    songs = "https://amp-api.music.apple.com/v1/catalog/%s/songs" % storefront
+
+    print("\n== can one request cover several songs? ==")
+    data = call("GET /songs?ids=a,b,c", songs, {"ids": ",".join(ids)})
+    got = len((data.get("data") or []))
+    print("      returned %d of %d songs" % (got, len(ids)))
+    if got == len(ids):
+        print("      -> batching works; the lookup half can be shared")
+
+    print("\n== can lyrics come back in that same request? ==")
+    for rel in ("lyrics", "syllable-lyrics"):
+        data = call("GET /songs?ids=...&include=%s" % rel, songs,
+                    {"ids": ",".join(ids), "include": rel})
+        rows = data.get("data") or []
+        carried = sum(1 for row in rows
+                      if ((row.get("relationships") or {}).get(rel, {})
+                          .get("data")))
+        if rows:
+            print("      %d of %d rows carried %s" % (carried, len(rows), rel))
+            if carried:
+                print("      -> lyrics can be batched; this is the big win")
+
+    print("\n== can an exact ISRC replace the text search? ==")
+    if not isrc:
+        print("  skipped: no ISRC tag found to test with")
+    else:
+        data = call("GET /songs?filter[isrc]=...", songs, {"filter[isrc]": isrc})
+        rows = data.get("data") or []
+        print("      returned %d song(s)" % len(rows))
+        if rows:
+            attrs = rows[0].get("attributes") or {}
+            print("      -> %r by %r" % (attrs.get("name"),
+                                         attrs.get("artistName")))
+            print("      -> exact lookup works, and cannot match the wrong "
+                  "recording the way a text search can")
+
+    print("\n== does a song say whether it has lyrics, without fetching? ==")
+    data = call("GET /songs/{id}?extend=hasTimeSyncedLyrics",
+                "%s/%s" % (songs, ids[0]), {"extend": "hasTimeSyncedLyrics"})
+    attrs = ((data.get("data") or [{}])[0].get("attributes") or {})
+    flags = {k: v for k, v in attrs.items() if "yric" in k}
+    print("      lyric-related attributes: %s" % (flags or "none"))
+    if flags:
+        print("      -> tracks without lyrics could be skipped before the "
+              "second call")
+    return 0
+
+
 def cmd_serve(args, config: Config) -> int:
     import uvicorn
 
@@ -401,6 +523,16 @@ def main(argv=None) -> int:
     p_raw.add_argument("--bytes", type=int, default=2000,
                        help="how much of each body to print (default 2000)")
     p_raw.set_defaults(func=cmd_apple_raw)
+
+    p_explore = sub.add_parser(
+        "apple-explore",
+        help="test whether Apple supports batching, ISRC lookup, or a "
+             "has-lyrics flag, any of which would cut the two calls a track "
+             "currently costs")
+    p_explore.add_argument("--sample", type=int, default=300,
+                           help="how many files to check for ISRC tags "
+                                "(default 300; 0 for the whole library)")
+    p_explore.set_defaults(func=cmd_apple_explore)
 
     p_serve = sub.add_parser("serve", help="run the web API")
     p_serve.add_argument("--host", default="0.0.0.0")
