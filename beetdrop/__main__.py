@@ -374,24 +374,33 @@ def cmd_apple_explore(args, config: Config) -> int:
     print("  %d of %d files sampled carry an ISRC (%.0f%%)" % (
         with_isrc, checked, 100.0 * with_isrc / checked if checked else 0))
     if not with_isrc:
-        print("  -> an ISRC lookup cannot help this library")
+        print("  -> no ISRC lookup possible as things stand; the other "
+              "tests below do not need one")
 
     # 2. Collect real material to probe with: song ids via the normal
     #    search, and an ISRC from a tagged file.
     ids, isrc = [], ""
+    # Bounded: a library with no ISRC at all must not turn this into a
+    # full walk that opens every file twice and prints nothing meanwhile.
+    looked_at = 0
     for path in sorted(config.music_root.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
             continue
-        if not isrc:
+        looked_at += 1
+        if not isrc and looked_at <= args.sample:
             isrc = read_isrc(path)
-        artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
-        if artist and title and len(ids) < 3:
-            found = apple.search_song(developer, config.apple_token, storefront,
-                                      artist, tidy_track_name(title, artist),
-                                      duration)
-            if found:
-                ids.append(found)
-        if len(ids) >= 3 and isrc:
+        if len(ids) < 3:
+            artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
+            if artist and title:
+                found = apple.search_song(developer, config.apple_token,
+                                          storefront, artist,
+                                          tidy_track_name(title, artist),
+                                          duration)
+                if found:
+                    ids.append(found)
+        # Everything below needs song ids; the ISRC test is optional and
+        # already known to be pointless when the library carries none.
+        if len(ids) >= 3 and (isrc or looked_at > args.sample):
             break
     if not ids:
         print("\ncould not resolve any song ids to probe with")
