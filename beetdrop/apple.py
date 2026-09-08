@@ -27,7 +27,7 @@ from xml.etree import ElementTree as ET
 
 import requests
 
-from .matching import base_title, normalize_artist
+from .matching import base_title, normalize_artist, significant_qualifiers
 
 SEARCH_URL = "https://amp-api.music.apple.com/v1/catalog/%s/search"
 LYRICS_URL = "https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics"
@@ -443,6 +443,15 @@ def looks_like_the_track(song, artist: str, title: str) -> bool:
             return False
     if artist and their_artist:
         if _same_artist(artist, their_artist) < MIN_ARTIST_RATIO:
+            return False
+    # A live or remixed cut is a different performance, and its lyrics are
+    # timed to that performance: accepting one for a studio track gives
+    # words that drift further out of step the longer it plays. The base
+    # titles match exactly here - "Don't Lose My Number" against "Don't
+    # Lose My Number (Live from the Serious Tour 1990)" - so only the
+    # qualifier tells them apart.
+    if title and their_title:
+        if significant_qualifiers(their_title) != significant_qualifiers(title):
             return False
     return True
 

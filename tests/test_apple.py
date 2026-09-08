@@ -1107,10 +1107,22 @@ class TestWrongSongIsRejected:
         song = self._song("Into the Unknown", theirs)
         assert apple.looks_like_the_track(song, mine, "Into the Unknown")
 
-    @pytest.mark.parametrize("theirs", ["Hello (Live)", "Hello"])
-    def test_a_qualifier_does_not_reject(self, theirs):
+    def test_a_plain_title_matches_a_plain_title(self):
         assert apple.looks_like_the_track(
+            self._song("Hello", "Adele"), "Adele", "Hello")
+
+    @pytest.mark.parametrize("theirs", [
+        "Hello (Live)", "Hello (Acoustic)", "Hello (Extended Remix)"])
+    def test_a_different_performance_is_rejected(self, theirs):
+        """Its lyrics are timed to that performance, so they drift against
+        the studio cut. From the library: "Don't Lose My Number" matched
+        "Don't Lose My Number (Live from the Serious Tour 1990)"."""
+        assert not apple.looks_like_the_track(
             self._song(theirs, "Adele"), "Adele", "Hello")
+
+    def test_a_live_track_still_matches_the_live_cut(self):
+        assert apple.looks_like_the_track(
+            self._song("Hello (Live)", "Adele"), "Adele", "Hello (Live)")
 
     def test_missing_names_are_not_treated_as_a_mismatch(self):
         # Absence is not disagreement - the same mistake the has-lyrics
