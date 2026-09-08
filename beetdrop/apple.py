@@ -38,7 +38,13 @@ DURATION_TOLERANCE = 8
 # full-library scan from running the catalog API too hard.
 THROTTLE_RETRIES = 4
 THROTTLE_BACKOFF = 1.0   # seconds, doubled each retry
-THROTTLE_MAX_WAIT = 30.0
+THROTTLE_MAX_WAIT = 30.0   # longest single sleep, so a wait stays interruptible
+# amp-api sends 429 with no Retry-After, so this is the wait that actually
+# applies in practice. Seconds, not the sub-second retry delay: the limit
+# outlasts that by a wide margin.
+THROTTLE_BLIND_WAIT = 60.0
+# Ceiling on the shared deadline, so a scan pauses rather than hanging.
+THROTTLE_MAX_HOLD = 900.0
 # Shared deadline: once Apple returns 429, every call waits, not just the
 # retries of the one that hit it.
 _throttle_until = 0.0
@@ -140,11 +146,24 @@ def fetch_developer_token(force: bool = False) -> str:
 
 
 def _retry_after(response, fallback: float) -> float:
+    """How long Apple wants us to wait, or a usable guess.
+
+    amp-api returns 429 with no Retry-After at all (code 42900, "Too Many
+    Requests"/"Request is forbidden"), so the guess is what actually
+    governs. It has to be a real pause: falling back to the first retry
+    delay meant a whole budget of 1+2+4+8 seconds against a limit that
+    lasts far longer, which just walked back into it four times.
+    """
+    stated = ""
     try:
-        return min(float(response.headers.get("Retry-After", "") or fallback),
-                   THROTTLE_MAX_WAIT)
+        stated = (response.headers or {}).get("Retry-After", "")
+    except Exception:
+        stated = ""
+    try:
+        wait = float(stated) if stated else max(fallback, THROTTLE_BLIND_WAIT)
     except ValueError:
-        return fallback
+        wait = max(fallback, THROTTLE_BLIND_WAIT)
+    return min(wait, THROTTLE_MAX_HOLD)
 
 
 def hold_off(seconds: float) -> None:
@@ -158,13 +177,26 @@ def hold_off(seconds: float) -> None:
     """
     global _throttle_until
     with _throttle_lock:
-        _throttle_until = max(_throttle_until, time.time() + seconds)
+        _throttle_until = max(_throttle_until,
+                              time.time() + min(seconds, THROTTLE_MAX_HOLD))
 
 
 def _await_throttle() -> None:
-    with _throttle_lock:
-        remaining = _throttle_until - time.time()
-    if remaining > 0:
+    """Block until the shared deadline has actually passed.
+
+    This slept once for at most THROTTLE_MAX_WAIT and then let the call
+    through regardless, so a 60-second hold paused for 30 and went
+    straight back into the limit. Sleeping in chunks keeps the cap on any
+    single sleep while still honouring the whole deadline.
+    """
+    # Bounded: enough chunks to cover the longest possible hold, and no
+    # more. Without a bound this spins forever against any sleep that
+    # returns without the clock having moved.
+    for _ in range(int(THROTTLE_MAX_HOLD // THROTTLE_MAX_WAIT) + 1):
+        with _throttle_lock:
+            remaining = _throttle_until - time.time()
+        if remaining <= 0:
+            return
         time.sleep(min(remaining, THROTTLE_MAX_WAIT))
 
 
