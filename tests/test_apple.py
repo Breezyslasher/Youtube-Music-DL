@@ -666,3 +666,74 @@ class TestThrottleIsShared:
         apple.hold_off(99999.0)
         apple._await_throttle()
         assert slept[0] <= apple.THROTTLE_MAX_WAIT
+
+
+class TestErrorIsReportedInFull:
+    """A status number alone cannot say whether a 429 is Apple limiting
+    the account or a proxy or CDN answering on Apple's behalf. The body
+    says which, so it has to reach the user rather than be swallowed."""
+
+    class Limited:
+        status_code = 429
+        reason = "Too Many Requests"
+        ok = False
+        headers = {
+            "Retry-After": "60",
+            "CF-Ray": "8f2c1a9-LHR",
+            "Content-Type": "application/json",
+            # Must never be echoed back: it is shown in the UI and pasted
+            # into bug reports.
+            "Set-Cookie": "session=super-secret",
+        }
+        text = '{"errors":[{"title":"Rate limit exceeded"}]}'
+
+    def setup_method(self):
+        apple._throttle_until = 0.0
+        apple.LAST_ERROR.clear()
+
+    def teardown_method(self):
+        apple._throttle_until = 0.0
+        apple.LAST_ERROR.clear()
+
+    def _trigger(self, monkeypatch):
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: self.Limited())
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        apple._get_json("https://amp-api.music.apple.com/v1/catalog/us/search",
+                        {"Authorization": "Bearer devtok-secret"})
+        return apple.describe_last_error()
+
+    def test_body_and_useful_headers_are_kept(self, monkeypatch):
+        report = self._trigger(monkeypatch)
+        assert "HTTP 429" in report
+        assert "Rate limit exceeded" in report      # Apple's own words
+        assert "Retry-After: 60" in report
+        assert "CF-Ray" in report                   # tells us who answered
+
+    def test_credentials_are_never_echoed(self, monkeypatch):
+        report = self._trigger(monkeypatch)
+        assert "devtok-secret" not in report
+        assert "super-secret" not in report
+        assert "Set-Cookie" not in report
+
+    def test_a_long_body_is_truncated(self, monkeypatch):
+        class Huge(self.Limited):
+            text = "x" * 50000
+        monkeypatch.setattr(apple.requests, "get", lambda *a, **k: Huge())
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        apple._get_json("https://x/y", {})
+        assert len(apple.LAST_ERROR["body"]) <= apple._BODY_SNIPPET
+
+    def test_nothing_recorded_means_empty_report(self):
+        assert apple.describe_last_error() == ""
+
+    def test_the_token_check_shows_what_apple_sent(self, monkeypatch):
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False: "dev")
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: self.Limited())
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        result = apple.check_token("mut")
+        assert result["ok"] is False
+        assert "Rate limit exceeded" in result["detail"]
+        assert "429" in result["detail"]

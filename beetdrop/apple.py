@@ -105,12 +105,15 @@ def fetch_developer_token(force: bool = False) -> str:
         if response.status_code == 429:
             # Scraping the player is the heaviest thing we do to Apple, so
             # a 429 here holds the catalog calls back as well.
+            _record_error(WEB_PLAYER, response)
             hold_off(_retry_after(response, THROTTLE_BACKOFF))
             raise AppleError(
                 "music.apple.com is rate limiting us (429) - wait a few "
-                "minutes before trying again")
+                "minutes before trying again.\n%s" % describe_last_error())
         if not response.ok:
-            raise AppleError("music.apple.com returned %s" % response.status_code)
+            _record_error(WEB_PLAYER, response)
+            raise AppleError("music.apple.com returned %s\n%s" % (
+                response.status_code, describe_last_error()))
         html = response.text
         token = ""
         found = _JWT.search(html)
@@ -165,6 +168,49 @@ def _await_throttle() -> None:
         time.sleep(min(remaining, THROTTLE_MAX_WAIT))
 
 
+# The last unsuccessful response, kept for diagnostics only: a status
+# number on its own does not say whether a 429 came from Apple or from
+# something in front of it, and the body usually does.
+LAST_ERROR = {}
+# Response headers worth keeping. An Authorization or Media-User-Token is
+# never recorded - these are shown to the user and go into bug reports.
+_KEEP_HEADERS = frozenset((
+    "retry-after", "content-type", "server", "date", "via", "x-cache",
+    "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+    # Present when Cloudflare answered instead of Apple, which is exactly
+    # the case a bare status number cannot tell you about.
+    "cf-ray", "cf-cache-status"))
+_BODY_SNIPPET = 600
+
+
+def _record_error(url: str, response) -> None:
+    LAST_ERROR.clear()
+    try:
+        body = (response.text or "").strip()
+    except Exception:
+        body = "<unreadable>"
+    LAST_ERROR.update(
+        url=url.split("?")[0],
+        status=response.status_code,
+        body=body[:_BODY_SNIPPET],
+        headers={name: value for name, value in
+                 getattr(response, "headers", {}).items()
+                 if name.lower() in _KEEP_HEADERS},
+    )
+
+
+def describe_last_error() -> str:
+    """The last failing response as text, for the UI and bug reports."""
+    if not LAST_ERROR:
+        return ""
+    parts = ["HTTP %s from %s" % (LAST_ERROR.get("status"), LAST_ERROR.get("url"))]
+    for name, value in sorted((LAST_ERROR.get("headers") or {}).items()):
+        parts.append("%s: %s" % (name, value))
+    body = LAST_ERROR.get("body")
+    parts.append("body: %s" % (body if body else "<empty>"))
+    return "\n".join(parts)
+
+
 def _get_json(url, headers, params=None):
     """One catalog call, waited out while Apple is asking us to slow down.
 
@@ -183,12 +229,14 @@ def _get_json(url, headers, params=None):
             return None, 0
         if response.status_code != 429:
             break
+        _record_error(url, response)
         # Hold every other call back too, not just this one's retries.
         hold_off(_retry_after(response, delay))
         if attempt == THROTTLE_RETRIES:
             return None, 429
         delay = min(delay * 2, THROTTLE_MAX_WAIT)
     if not response.ok:
+        _record_error(url, response)
         return None, response.status_code
     try:
         return response.json(), 200
@@ -433,9 +481,11 @@ def check_token(media_user_token: str, storefront: str = "us") -> dict:
         return {"ok": False, "detail":
                 "Apple is rate limiting us (429). This is temporary and not a "
                 "problem with your token - wait a few minutes, and avoid "
-                "running a library scan at the same time"}
+                "running a library scan at the same time.\n\nWhat Apple "
+                "actually sent:\n%s" % describe_last_error()}
     if not data:
-        return {"ok": False, "detail": "Apple search failed (status %s)" % status}
+        return {"ok": False, "detail": "Apple search failed (status %s)\n\n%s" % (
+            status, describe_last_error())}
     try:
         song_id = data["results"]["songs"]["data"][0]["id"]
     except (KeyError, IndexError, TypeError):
