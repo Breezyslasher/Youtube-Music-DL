@@ -247,7 +247,8 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                         provider: str = "lrclib",
                         apple_token: str = "",
                         apple_storefront: str = "us",
-                        word_by_word: bool = False) -> Optional[str]:
+                        word_by_word: bool = False,
+                        word_only: bool = False) -> Optional[str]:
     """The LRC text for this track, or None when no *synced* lyrics exist.
 
     `provider` picks which source is tried first; the others follow as
@@ -257,6 +258,11 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
 
     Apple is the only source that can supply per-word timing; with
     word_by_word it emits Enhanced (A2) LRC when Apple has it.
+
+    word_only is for the upgrade pass, whose caller keeps a result only
+    when it has per-word timing. Since Apple is the sole source of that,
+    asking the others is eight round trips spent on an answer that is
+    guaranteed to be discarded, so they are skipped outright.
     """
     if not artist or not title:
         return None
@@ -288,6 +294,11 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
         lrc = source("apple")
         if usable(lrc) and has_word_timing(lrc):
             return lrc
+
+    if word_only:
+        # Nothing else can answer this question, so stop here rather than
+        # walk the whole chain for a result the caller will throw away.
+        return None
 
     primary = provider if provider in PROVIDERS else "lrclib"
     order = [primary] + [name for name in PROVIDERS if name != primary]

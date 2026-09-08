@@ -566,3 +566,48 @@ class TestStatsNameTheTracks:
         with TestClient(create_app(config)) as client:
             body = client.get("/api/lyrics/stats").json()
         assert body["line_level_files"] == ["A/line.opus"]
+
+
+class TestUpgradeAsksOnlyApple:
+    """The upgrade pass keeps a result only when it has per-word timing,
+    and Apple is the only source of that. Asking the others is round trips
+    spent on an answer that is thrown away."""
+
+    def _count(self, **kwargs):
+        import time
+        from unittest import mock
+
+        import requests
+
+        from beetdrop import apple, lyrics
+        seen = []
+
+        class Miss:
+            ok = False
+            status_code = 404
+            text = ""
+
+            def json(self):
+                return {}
+
+        apple._dev_token["value"] = "dev"   # pretend already cached
+        apple._dev_token["at"] = time.time()
+
+        def counting_get(url, **kw):
+            seen.append(url.split("/")[2])
+            return Miss()
+
+        with mock.patch.object(requests, "get", counting_get):
+            lyrics.fetch_synced_lyrics("Adele", "Hello (Live)", "25", 295,
+                                       apple_token="t", musixmatch_token="m",
+                                       **kwargs)
+        return seen
+
+    def test_word_only_skips_the_sources_that_cannot_answer(self):
+        hosts = self._count(word_by_word=True, word_only=True)
+        assert all("apple" in h for h in hosts), hosts
+
+    def test_without_word_only_the_whole_chain_is_walked(self):
+        hosts = self._count(word_by_word=True)
+        assert any("lrclib" in h for h in hosts)
+        assert any("musixmatch" in h for h in hosts)
