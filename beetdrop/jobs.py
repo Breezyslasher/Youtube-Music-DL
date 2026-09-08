@@ -172,21 +172,30 @@ class JobManager:
                 # video_id carries the mode: "__refresh__" also purges
                 # placeholder sidecars before re-fetching.
                 purge = job["video_id"] == "__refresh__"
+                upgrade = job["video_id"] == "__upgrade__"
                 self._update(job_id, stage="scanning", title=(
+                    "Library lyrics upgrade" if upgrade else
                     "Library lyrics refresh" if purge else "Library lyrics scan"))
                 result = backfill_lyrics(config, on_progress=on_progress,
-                                         on_detail=on_detail, purge_bad=purge)
-                detail = "added lyrics to %d of %d tracks missing them" % (
-                    result.added, result.total)
-                extras = []
-                if result.purged:
-                    extras.append("%d placeholder files removed" % result.purged)
-                if result.no_match:
-                    extras.append("%d with no synced lyrics found" % result.no_match)
-                if result.skipped:
-                    extras.append("%d skipped (no title/artist)" % result.skipped)
-                if extras:
-                    detail += " (" + ", ".join(extras) + ")"
+                                         on_detail=on_detail, purge_bad=purge,
+                                         upgrade=upgrade)
+                if upgrade:
+                    detail = "upgraded %d of %d line-level tracks to word-by-word" % (
+                        result.upgraded, result.total)
+                    if result.no_match:
+                        detail += " (%d had no word-level version)" % result.no_match
+                else:
+                    detail = "added lyrics to %d of %d tracks missing them" % (
+                        result.added, result.total)
+                    extras = []
+                    if result.purged:
+                        extras.append("%d placeholder files removed first" % result.purged)
+                    if result.no_match:
+                        extras.append("%d with no synced lyrics found" % result.no_match)
+                    if result.skipped:
+                        extras.append("%d skipped (no title/artist)" % result.skipped)
+                    if extras:
+                        detail += " (" + ", ".join(extras) + ")"
                 self._update(job_id, stage="done", progress=100.0,
                              detail=detail[:2000], log=collector.text()[:20000])
                 return

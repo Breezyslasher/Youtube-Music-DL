@@ -300,6 +300,15 @@
       <button type="button" @click="scanLyrics(true)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting...' : 'Delete bad lyrics and re-fetch' }}
       </button>
+      <button type="button" @click="scanLyrics(false, true)" :disabled="scanningLyrics">
+        {{ scanningLyrics ? 'Starting...' : 'Upgrade existing lyrics to word-by-word' }}
+      </button>
+      <p class="note">
+        Upgrade revisits tracks whose .lrc has no per-word timing and
+        replaces it only where Apple has a word-level version - the one
+        pass that overwrites an existing sidecar, and only ever with the
+        richer form of the same lyrics. Needs an Apple token.
+      </p>
       <p class="note">
         Re-fetch deletes placeholder .lrc files first - generated junk with
         perfectly even line timing, whatever wrote it - then looks those

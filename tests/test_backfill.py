@@ -11,6 +11,7 @@ import beetdrop.backfill as backfill
 from beetdrop.app import create_app
 from beetdrop.backfill import (
     backfill_lyrics,
+    iter_audio_line_level_lyrics,
     iter_audio_missing_lyrics,
     meta_from_path,
     read_track_meta,
@@ -274,3 +275,88 @@ class TestScanEndpoint:
             store.update_job(job["id"], stage="scanning")
             resp = client.post("/api/lyrics/scan")
         assert resp.status_code == 409
+
+
+WORD_LRC = "[00:09.26]<00:09.26>I <00:09.64>drove <00:10.00>by"
+LINE_LRC = "[00:09.26]I drove by\n[00:12.10]We used to hang out"
+
+
+@pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+class TestUpgradePass:
+    def _config(self, tmp_path):
+        music = tmp_path / "music"
+        music.mkdir()
+        return Config(music_root=music, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def _track(self, config, name, lrc=None, title="HasLyrics"):
+        path = config.music_root / "A" / ("%s.opus" % name)
+        make_opus(path)
+        write_full_tags(path, FullTags(title=title, artist="A"))
+        if lrc is not None:
+            path.with_suffix(".lrc").write_text(lrc)
+        return path
+
+    def test_finds_only_line_level_sidecars(self, tmp_path):
+        config = self._config(tmp_path)
+        line = self._track(config, "line", LINE_LRC)
+        self._track(config, "word", WORD_LRC)   # already word-level
+        self._track(config, "none", None)       # no sidecar at all
+        found = list(iter_audio_line_level_lyrics(config.music_root))
+        assert found == [line]
+
+    def test_replaces_line_level_with_word_level(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "line", LINE_LRC)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: WORD_LRC)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, upgrade=True)
+        assert result.total == 1 and result.upgraded == 1
+        assert track.with_suffix(".lrc").read_text() == WORD_LRC
+
+    def test_keeps_existing_when_no_word_version_exists(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "line", LINE_LRC)
+        # Apple only has line timing for this one - the existing file must
+        # survive untouched rather than be overwritten with no improvement.
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: "[00:01.00]some other line lyrics")
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, upgrade=True)
+        assert result.upgraded == 0 and result.no_match == 1
+        assert track.with_suffix(".lrc").read_text() == LINE_LRC
+
+    def test_nothing_found_returns_none_and_keeps_file(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "line", LINE_LRC)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", lambda *a, **k: None)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, upgrade=True)
+        assert result.upgraded == 0
+        assert track.with_suffix(".lrc").read_text() == LINE_LRC
+
+    def test_upgrade_always_asks_for_word_timing(self, tmp_path, monkeypatch):
+        """Even with the standing setting off - the run is an explicit ask."""
+        config = self._config(tmp_path)
+        config.word_lyrics = False
+        self._track(config, "line", LINE_LRC)
+        seen = {}
+
+        def fake(*a, **k):
+            seen.update(k)
+            return WORD_LRC
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        backfill_lyrics(config, upgrade=True)
+        assert seen["word_by_word"] is True
+
+    def test_normal_scan_still_never_overwrites(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "line", LINE_LRC)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: WORD_LRC)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config)  # not an upgrade run
+        assert result.total == 0
+        assert track.with_suffix(".lrc").read_text() == LINE_LRC

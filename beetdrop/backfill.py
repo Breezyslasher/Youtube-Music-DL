@@ -18,7 +18,7 @@ import mutagen
 
 from .config import Config
 from .library import write_lyrics_sidecar
-from .lyrics import fetch_synced_lyrics, looks_synthetic
+from .lyrics import fetch_synced_lyrics, has_word_timing, looks_synthetic
 
 # Leading track (and disc) number on a filename, e.g. "02 - ", "1-02 - ".
 _TRACK_PREFIX = re.compile(r"^(?:\d+-)?\d+\s*[-.]\s*")
@@ -42,6 +42,7 @@ class BackfillResult:
     added: int      # sidecars written
     skipped: int    # files with no usable artist/title tags
     no_match: int   # looked up but no synced lyrics found
+    upgraded: int = 0  # line-level sidecars replaced with word-level
     purged: int = 0  # bogus placeholder sidecars deleted first
 
 
@@ -87,6 +88,27 @@ def iter_audio_missing_lyrics(root: Path):
     for path in sorted(root.rglob("*")):
         if (path.is_file() and path.suffix.lower() in AUDIO_EXTS
                 and not path.with_suffix(".lrc").exists()):
+            yield path
+
+
+def iter_audio_line_level_lyrics(root: Path):
+    """Audio whose .lrc exists but carries no per-word timing.
+
+    These are the tracks a word-by-word upgrade can improve; anything
+    already word-level, or with no sidecar at all, is left to the other
+    passes.
+    """
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        sidecar = path.with_suffix(".lrc")
+        if not sidecar.is_file():
+            continue
+        try:
+            text = sidecar.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if not has_word_timing(text):
             yield path
 
 
@@ -150,11 +172,18 @@ def backfill_lyrics(
     on_detail: Callable[[str], None] = _noop,
     files: Optional[list] = None,
     purge_bad: bool = False,
+    upgrade: bool = False,
 ) -> BackfillResult:
     """Fetch and write .lrc sidecars for library tracks missing them.
 
     purge_bad first deletes placeholder sidecars (generated junk), so the
     tracks they were blocking get looked up fresh in the same run.
+
+    upgrade instead revisits tracks that already have a line-level sidecar
+    and replaces it when a per-word version can be had. It is the one pass
+    that overwrites an existing file, and only ever with the richer form of
+    the same lyrics: a result without word timing is discarded rather than
+    written over what is already there.
 
     on_progress/on_detail let the job layer mirror the scan and also act as
     cancellation checkpoints. `files` lets a caller pre-compute the list.
@@ -164,9 +193,10 @@ def backfill_lyrics(
         on_detail("checking existing lyrics for placeholder junk...")
         purged = purge_bad_lyrics(config.music_root, on_detail)
     if files is None:
-        files = list(iter_audio_missing_lyrics(config.music_root))
+        files = list(iter_audio_line_level_lyrics(config.music_root) if upgrade
+                     else iter_audio_missing_lyrics(config.music_root))
     total = len(files)
-    added = skipped = no_match = 0
+    added = skipped = no_match = upgraded = 0
 
     for index, path in enumerate(files):
         meta = read_track_meta(path)
@@ -190,10 +220,22 @@ def backfill_lyrics(
                     provider=config.lyrics_provider,
                     apple_token=config.apple_token,
                     apple_storefront=config.apple_storefront,
-                    word_by_word=config.word_lyrics)
+                    # An upgrade run is an explicit request for per-word
+                    # timing, so ask for it whatever the standing setting.
+                    word_by_word=True if upgrade else config.word_lyrics)
             except Exception:
                 lrc = None
-            if lrc:
+            if upgrade:
+                # Only replace when the answer is actually better.
+                if lrc and has_word_timing(lrc):
+                    try:
+                        write_lyrics_sidecar(path, lrc, overwrite=True)
+                        upgraded += 1
+                    except Exception:
+                        no_match += 1
+                else:
+                    no_match += 1
+            elif lrc:
                 try:
                     write_lyrics_sidecar(path, lrc)
                     added += 1
@@ -202,9 +244,11 @@ def backfill_lyrics(
             else:
                 no_match += 1
             time.sleep(REQUEST_SPACING)
-        on_detail("%d/%d checked, %d lyrics added" % (index + 1, total, added))
+        on_detail("%d/%d checked, %d %s" % (
+            index + 1, total, upgraded if upgrade else added,
+            "upgraded to word-by-word" if upgrade else "lyrics added"))
         if total:
             on_progress((index + 1) / total * 100.0)
 
     return BackfillResult(total=total, added=added, skipped=skipped,
-                          no_match=no_match, purged=purged)
+                          no_match=no_match, upgraded=upgraded, purged=purged)
