@@ -15,18 +15,26 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
+from typing import Optional
 
 from .config import Config
 from .lyrics import PROVIDERS as LYRICS_PROVIDERS
 
 
-def apply_stored_settings(base: Config, stored: dict) -> Config:
+def apply_stored_settings(base: Config, stored: dict,
+                          music_locked: Optional[bool] = None,
+                          video_locked: Optional[bool] = None) -> Config:
     """A copy of `base` with the stored settings layered on top.
 
     MUSIC_PATH/VIDEO_PATH in the environment pin the library to a
     container mount, so a stored override of those is ignored: pointing
-    them at an unmounted host path only breaks writes.
+    them at an unmounted host path only breaks writes. The caller may
+    state those locks explicitly; by default they follow the environment.
     """
+    if music_locked is None:
+        music_locked = "MUSIC_PATH" in os.environ
+    if video_locked is None:
+        video_locked = "VIDEO_PATH" in os.environ
     config = replace(base)
     if stored.get("output_format"):
         config.output_format = stored["output_format"]
@@ -39,7 +47,7 @@ def apply_stored_settings(base: Config, stored: dict) -> Config:
             config.concurrency = int(stored["concurrency"])
         except ValueError:
             pass
-    if stored.get("music_root") and "MUSIC_PATH" not in os.environ:
+    if stored.get("music_root") and not music_locked:
         config.music_root = Path(stored["music_root"])
     if stored.get("lyrics") in ("0", "1"):
         config.lyrics_enabled = stored["lyrics"] == "1"
@@ -53,7 +61,7 @@ def apply_stored_settings(base: Config, stored: dict) -> Config:
         config.apple_storefront = stored["apple_storefront"]
     if stored.get("word_lyrics") in ("0", "1"):
         config.word_lyrics = stored["word_lyrics"] == "1"
-    if stored.get("video_root") and "VIDEO_PATH" not in os.environ:
+    if stored.get("video_root") and not video_locked:
         config.video_root = Path(stored["video_root"])
     if stored.get("video_max_height"):
         try:

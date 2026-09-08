@@ -16,6 +16,7 @@ from .config import SUPPORTED_FORMATS, Config, StorageError, check_storage
 from .download import DownloadError, ytdlp_version
 from .grab import run_album_grab, run_grab, run_video_grab
 from .search import search_albums, search_songs, search_videos
+from .settings import config_with_settings
 
 
 def _format_duration(seconds) -> str:
@@ -313,7 +314,10 @@ def main(argv=None) -> int:
     p_version.set_defaults(func=cmd_version)
 
     args = parser.parse_args(argv)
-    config = Config()
+    # The same settings the web UI saves - tokens, provider, word-by-word.
+    # Without this the CLI ran on environment variables alone, so
+    # scan-lyrics --upgrade found no Apple token and did nothing at all.
+    config = config_with_settings(Config())
     if getattr(args, "library", None):
         config.music_root = Path(args.library).expanduser()
     return args.func(args, config)
