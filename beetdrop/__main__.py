@@ -325,6 +325,12 @@ def cmd_apple_raw(args, config: Config) -> int:
     return 0
 
 
+# How many library tracks to try before giving up on finding song ids.
+# Small on purpose: three ids is all the probe needs, and every attempt
+# is a live Apple call.
+MAX_ID_ATTEMPTS = 12
+
+
 def cmd_apple_explore(args, config: Config) -> int:
     """Test whether Apple offers a cheaper route than search-then-fetch.
 
@@ -379,29 +385,37 @@ def cmd_apple_explore(args, config: Config) -> int:
 
     # 2. Collect real material to probe with: song ids via the normal
     #    search, and an ISRC from a tagged file.
-    ids, isrc = [], ""
-    # Bounded: a library with no ISRC at all must not turn this into a
-    # full walk that opens every file twice and prints nothing meanwhile.
-    looked_at = 0
+    #
+    #    Strictly bounded. Searching once per library file until three ids
+    #    turn up looks fine until Apple is rate limiting, when every search
+    #    sits through the backoff and the command goes silent for hours -
+    #    which is exactly when someone runs this to find out what is wrong.
+    ids, isrc, tried = [], "", 0
+    print("\nresolving a few song ids to probe with...")
     for path in sorted(config.music_root.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
             continue
-        looked_at += 1
-        if not isrc and looked_at <= args.sample:
+        if not isrc and tried < args.sample:
             isrc = read_isrc(path)
-        if len(ids) < 3:
-            artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
-            if artist and title:
-                found = apple.search_song(developer, config.apple_token,
-                                          storefront, artist,
-                                          tidy_track_name(title, artist),
-                                          duration)
-                if found:
-                    ids.append(found)
-        # Everything below needs song ids; the ISRC test is optional and
-        # already known to be pointless when the library carries none.
-        if len(ids) >= 3 and (isrc or looked_at > args.sample):
+        if len(ids) >= 3 or tried >= MAX_ID_ATTEMPTS:
             break
+        artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
+        if not (artist and title):
+            continue
+        tried += 1
+        try:
+            found = apple.search_song(developer, config.apple_token, storefront,
+                                      artist, tidy_track_name(title, artist),
+                                      duration)
+        except apple.AppleUnavailable as exc:
+            print("  Apple will not answer: %s" % exc)
+            print("\nNothing below can be tested until that clears. This is "
+                  "the rate limit, not a fault in your setup - wait a few "
+                  "minutes and run it again.")
+            return 2
+        print("  %-38s %s" % (title[:38], found or "no match"))
+        if found:
+            ids.append(found)
     if not ids:
         print("\ncould not resolve any song ids to probe with")
         return 1
@@ -552,6 +566,13 @@ def main(argv=None) -> int:
     p_version.set_defaults(func=cmd_version)
 
     args = parser.parse_args(argv)
+    # `docker exec` gives a pipe, not a terminal, and Python block-buffers
+    # to a pipe: a scan's progress lines sit in an 8KB buffer instead of
+    # appearing, so a long command looks hung when it is working fine.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     # The same settings the web UI saves - tokens, provider, word-by-word.
     # Without this the CLI ran on environment variables alone, so
     # scan-lyrics --upgrade found no Apple token and did nothing at all.
