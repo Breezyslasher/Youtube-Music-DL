@@ -246,12 +246,17 @@ def write_cover_file(directory: Path, cover: bytes, mime: str) -> None:
             temp.unlink()
 
 
-def write_lyrics_sidecar(audio_path: Path, lrc_text: str) -> Path:
+def write_lyrics_sidecar(audio_path: Path, lrc_text: str,
+                         overwrite: bool = False) -> Path:
     """A .lrc sidecar next to the audio file, same basename - the
-    convention players use to pair synced lyrics with a track. Atomic,
-    and does not overwrite an existing sidecar."""
+    convention players use to pair synced lyrics with a track. Atomic.
+
+    An existing sidecar is left alone unless overwrite is set, which only
+    the word-by-word upgrade pass does: it deliberately replaces a
+    line-level file with the richer version of the same lyrics.
+    """
     target = audio_path.with_suffix(".lrc")
-    if target.exists():
+    if target.exists() and not overwrite:
         return target
     temp = target.parent / (".%s.beetdrop-tmp" % target.name)
     try:

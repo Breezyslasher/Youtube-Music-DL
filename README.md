@@ -152,7 +152,9 @@ CLI:
 ```
 python -m beetdrop search "artist song" [--albums | --videos]
 python -m beetdrop grab <video_id> [--album | --video] [--format opus|m4a|mp3] [--library PATH]
-python -m beetdrop scan-lyrics [--refresh]     # backfill .lrc (--refresh purges junk first)
+python -m beetdrop scan-lyrics [--refresh|--upgrade]  # backfill .lrc
+                                               # --refresh purges junk first
+                                               # --upgrade re-fetches line-level as word-by-word
 python -m beetdrop serve [--host 0.0.0.0] [--port 8090]
 ```
 

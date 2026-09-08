@@ -336,7 +336,7 @@ createApp({
       }
     },
 
-    async scanLyrics(refresh) {
+    async scanLyrics(refresh, upgrade) {
       this.scanningLyrics = true;
       try {
         const job = await this.api(

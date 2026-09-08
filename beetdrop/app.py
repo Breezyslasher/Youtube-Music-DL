@@ -520,7 +520,7 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
         return result
 
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
-    async def api_lyrics_scan(refresh: bool = False):
+    async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False):
         """Backfill synced lyrics for library tracks that have no .lrc yet.
 
         refresh=true first deletes placeholder sidecars (generated junk
@@ -530,8 +530,9 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
 
         Runs as a normal cancellable job so the queue shows its progress.
         """
-        marker = "__refresh__" if refresh else "__library__"
-        for candidate in ("__library__", "__refresh__"):
+        marker = ("__upgrade__" if upgrade else
+                  "__refresh__" if refresh else "__library__")
+        for candidate in ("__library__", "__refresh__", "__upgrade__"):
             existing = store.find_duplicate(candidate, "lyricscan")
             if existing is not None and existing["stage"] not in (
                     "done", "failed", "cancelled"):
