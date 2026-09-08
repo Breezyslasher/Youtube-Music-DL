@@ -39,6 +39,10 @@ DURATION_TOLERANCE = 8
 THROTTLE_RETRIES = 4
 THROTTLE_BACKOFF = 1.0   # seconds, doubled each retry
 THROTTLE_MAX_WAIT = 30.0
+# Shared deadline: once Apple returns 429, every call waits, not just the
+# retries of the one that hit it.
+_throttle_until = 0.0
+_throttle_lock = threading.Lock()
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 _JWT = re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}")
@@ -95,8 +99,16 @@ def fetch_developer_token(force: bool = False) -> str:
         if fresh:
             return _dev_token["value"]
     try:
+        _await_throttle()
         response = requests.get(WEB_PLAYER, headers={"User-Agent": UA},
                                 timeout=TIMEOUT)
+        if response.status_code == 429:
+            # Scraping the player is the heaviest thing we do to Apple, so
+            # a 429 here holds the catalog calls back as well.
+            hold_off(_retry_after(response, THROTTLE_BACKOFF))
+            raise AppleError(
+                "music.apple.com is rate limiting us (429) - wait a few "
+                "minutes before trying again")
         if not response.ok:
             raise AppleError("music.apple.com returned %s" % response.status_code)
         html = response.text
@@ -124,8 +136,37 @@ def fetch_developer_token(force: bool = False) -> str:
     return token
 
 
+def _retry_after(response, fallback: float) -> float:
+    try:
+        return min(float(response.headers.get("Retry-After", "") or fallback),
+                   THROTTLE_MAX_WAIT)
+    except ValueError:
+        return fallback
+
+
+def hold_off(seconds: float) -> None:
+    """Make every Apple call wait until the rate limit has passed.
+
+    Per-request retries alone made a throttled scan worse, not better:
+    with no pause between tracks, each of thousands of lookups hit the
+    limit and then burned its whole retry budget against it, so being
+    told to slow down multiplied the traffic instead of reducing it. The
+    deadline is shared, so one 429 paces the entire run.
+    """
+    global _throttle_until
+    with _throttle_lock:
+        _throttle_until = max(_throttle_until, time.time() + seconds)
+
+
+def _await_throttle() -> None:
+    with _throttle_lock:
+        remaining = _throttle_until - time.time()
+    if remaining > 0:
+        time.sleep(min(remaining, THROTTLE_MAX_WAIT))
+
+
 def _get_json(url, headers, params=None):
-    """One catalog call, retried while Apple is asking us to slow down.
+    """One catalog call, waited out while Apple is asking us to slow down.
 
     A library scan runs these back to back, so 429 is a real outcome. It
     has to be waited out rather than returned: to every caller above,
@@ -134,6 +175,7 @@ def _get_json(url, headers, params=None):
     """
     delay = THROTTLE_BACKOFF
     for attempt in range(THROTTLE_RETRIES + 1):
+        _await_throttle()
         try:
             response = requests.get(url, headers=headers, params=params,
                                     timeout=TIMEOUT)
@@ -141,14 +183,10 @@ def _get_json(url, headers, params=None):
             return None, 0
         if response.status_code != 429:
             break
+        # Hold every other call back too, not just this one's retries.
+        hold_off(_retry_after(response, delay))
         if attempt == THROTTLE_RETRIES:
             return None, 429
-        # Apple usually says how long; fall back to backing off steadily.
-        try:
-            wait = float(response.headers.get("Retry-After", "") or delay)
-        except ValueError:
-            wait = delay
-        time.sleep(min(wait, THROTTLE_MAX_WAIT))
         delay = min(delay * 2, THROTTLE_MAX_WAIT)
     if not response.ok:
         return None, response.status_code
@@ -391,6 +429,11 @@ def check_token(media_user_token: str, storefront: str = "us") -> dict:
         return {"ok": False, "detail":
                 "Apple rejected the media-user-token (%s) - sign in again and "
                 "copy a fresh one" % status}
+    if status == 429:
+        return {"ok": False, "detail":
+                "Apple is rate limiting us (429). This is temporary and not a "
+                "problem with your token - wait a few minutes, and avoid "
+                "running a library scan at the same time"}
     if not data:
         return {"ok": False, "detail": "Apple search failed (status %s)" % status}
     try:

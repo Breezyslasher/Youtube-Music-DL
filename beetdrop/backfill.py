@@ -8,6 +8,7 @@ missing match or a network error is counted and skipped, never fatal.
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -42,11 +43,13 @@ _YEAR_SUFFIX = re.compile(r"\s*\((?:19|20)\d{2}\)\s*$")
 
 # Audio we tag/file; the video library's .mp4 files are ignored.
 AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
-# No fixed pause between lookups: on a big library it was costing hours
-# to buy politeness the providers never asked for. Apple's 429 backoff
-# handles the one source that does push back, and only when it actually
-# does. Set this above zero to reintroduce a fixed pause.
-REQUEST_SPACING = 0.0
+# Seconds to wait between lookups. This was dropped to 0 to speed up a
+# full-library pass and Apple started returning 429 on a real library, so
+# it is back: running flat out is what provoked the rate limit, and once
+# provoked it blocks the Settings token test too, not just the scan.
+# 0.2 is the value that ran for weeks without complaint. Set
+# LYRICS_REQUEST_SPACING=0 to run flat out anyway.
+REQUEST_SPACING = float(os.environ.get("LYRICS_REQUEST_SPACING", "0.2"))
 
 
 def _noop(*args) -> None:

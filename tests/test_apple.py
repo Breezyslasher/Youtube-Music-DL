@@ -466,10 +466,16 @@ class TestBackwardsDetection:
 
 
 class TestThrottleBackoff:
-    """A scan runs catalog calls back to back with no fixed pause, so 429
-    is a normal outcome and has to be waited out. Returning None instead
-    would read as "this track has no lyrics" everywhere above, quietly
-    marking a throttled run's tracks as misses."""
+    """429 is a real outcome on a library scan and has to be waited out.
+    Returning None instead would read as "this track has no lyrics"
+    everywhere above, quietly marking a throttled run's tracks as
+    misses."""
+
+    def setup_method(self):
+        apple._throttle_until = 0.0
+
+    def teardown_method(self):
+        apple._throttle_until = 0.0
 
     def _response(self, status, headers=None):
         class R:
@@ -499,8 +505,10 @@ class TestThrottleBackoff:
         data, status = apple._get_json("https://x/y", {})
         assert (data, status) == ({"ok": True}, 200)
         assert len(seen) == 3                 # it retried rather than giving up
-        assert slept[0] == 2                  # honoured Retry-After
-        assert slept[1] >= apple.THROTTLE_BACKOFF
+        # The wait is a shared deadline now, so the sleep is whatever is
+        # left of it - just under Retry-After, never over.
+        assert 1.5 < slept[0] <= 2            # honoured Retry-After
+        assert slept[1] > 0
 
     def test_gives_up_after_the_retry_budget(self, monkeypatch):
         monkeypatch.setattr(apple.requests, "get",
@@ -609,3 +617,52 @@ class TestStaleDeveloperTokenRefresh:
         monkeypatch.setattr(apple, "fetch_developer_token",
                             lambda force=False: pytest.fail("rescraped"))
         assert apple._refresh_developer_token("old") == "old"
+
+
+class TestThrottleIsShared:
+    """Per-request retries alone made a rate limit worse: with no pause
+    between tracks, every one of thousands of lookups hit the limit and
+    burned its full retry budget against it. Being told to slow down has
+    to slow the whole run down, not just the call that was told."""
+
+    class Limited:
+        status_code = 429
+        ok = False
+        headers = {"Retry-After": "5"}
+
+        def json(self):
+            return {}
+
+    def setup_method(self):
+        apple._throttle_until = 0.0
+
+    def teardown_method(self):
+        apple._throttle_until = 0.0
+
+    def test_a_429_holds_back_later_calls(self, monkeypatch):
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: self.Limited())
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        apple._get_json("https://x/y", {})
+        # A later, unrelated call now has a deadline to wait for.
+        assert apple._throttle_until > apple.time.time()
+
+    def test_the_deadline_is_waited_out(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(apple.time, "sleep", lambda s: slept.append(s))
+        apple.hold_off(4.0)
+        apple._await_throttle()
+        assert slept and 0 < slept[0] <= 4.0
+
+    def test_hold_off_never_shortens_an_existing_deadline(self):
+        apple.hold_off(30.0)
+        first = apple._throttle_until
+        apple.hold_off(1.0)
+        assert apple._throttle_until == first
+
+    def test_a_waiting_scan_is_capped(self, monkeypatch):
+        slept = []
+        monkeypatch.setattr(apple.time, "sleep", lambda s: slept.append(s))
+        apple.hold_off(99999.0)
+        apple._await_throttle()
+        assert slept[0] <= apple.THROTTLE_MAX_WAIT
