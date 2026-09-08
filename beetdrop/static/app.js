@@ -320,14 +320,18 @@ createApp({
       }
     },
 
-    async scanLyrics() {
+    async scanLyrics(refresh) {
       this.scanningLyrics = true;
       try {
-        const job = await this.api("/api/lyrics/scan", { method: "POST" });
+        const job = await this.api(
+          "/api/lyrics/scan" + (refresh ? "?refresh=true" : ""),
+          { method: "POST" });
         this.upsertJob(job);
         this.settingsOpen = false;
         this.queueOpen = true;
-        this.showToast("Library lyrics scan started");
+        this.showToast(refresh
+          ? "Deleting bad lyrics and re-fetching"
+          : "Library lyrics scan started");
       } catch (err) {
         if (err.message === "password required") return;
         this.showToast(err.status === 409

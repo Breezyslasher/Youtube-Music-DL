@@ -106,7 +106,10 @@ def cmd_scan_lyrics(args, config: Config) -> int:
     except StorageError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
-    result = backfill_lyrics(config, on_detail=lambda text: print(text))
+    result = backfill_lyrics(config, on_detail=lambda text: print(text),
+                             purge_bad=args.refresh)
+    if result.purged:
+        print("removed %d placeholder lyric files" % result.purged)
     print("done: added lyrics to %d of %d tracks missing them "
           "(%d no match, %d skipped)" % (
               result.added, result.total, result.no_match, result.skipped))
@@ -151,6 +154,8 @@ def main(argv=None) -> int:
 
     p_scan = sub.add_parser("scan-lyrics",
                             help="fetch synced lyrics for library tracks missing them")
+    p_scan.add_argument("--refresh", action="store_true",
+                        help="delete placeholder .lrc files first, then re-fetch them")
     p_scan.set_defaults(func=cmd_scan_lyrics)
 
     p_serve = sub.add_parser("serve", help="run the web API")

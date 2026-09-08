@@ -10,6 +10,8 @@ Navidrome, and most players read for synced lyrics.
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from typing import Optional
 
 import requests
@@ -19,6 +21,42 @@ from .mb import USER_AGENT
 
 LRCLIB_GET = "https://lrclib.net/api/get"
 TIMEOUT = 10
+
+_TIMESTAMP = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
+# A placeholder generator spaces every line identically; real transcribed
+# lyrics never do. Require a good number of lines before judging.
+_MIN_LINES_TO_JUDGE = 8
+_UNIFORM_RATIO = 0.95
+
+
+def lrc_times(lrc: str) -> list:
+    """Every [mm:ss.xx] timestamp in an LRC, as seconds."""
+    times = []
+    for match in _TIMESTAMP.finditer(lrc or ""):
+        minutes, seconds, frac = match.groups()
+        value = int(minutes) * 60 + int(seconds)
+        if frac:
+            value += int(frac) / (100.0 if len(frac) <= 2 else 1000.0)
+        times.append(value)
+    return times
+
+
+def looks_synthetic(lrc: str) -> bool:
+    """True when an LRC's lines are perfectly evenly spaced - the
+    signature of generated placeholder text, not of real lyrics.
+
+    Deliberately language-agnostic: it judges only the timing, so real
+    lyrics in any language (including romaji transliterations that can
+    look like nonsense words) are never rejected.
+    """
+    times = lrc_times(lrc)
+    if len(times) < _MIN_LINES_TO_JUDGE:
+        return False
+    gaps = [round(b - a, 2) for a, b in zip(times, times[1:]) if b >= a]
+    if len(gaps) < _MIN_LINES_TO_JUDGE - 1:
+        return False
+    gap, hits = Counter(gaps).most_common(1)[0]
+    return gap > 0 and hits / len(gaps) >= _UNIFORM_RATIO
 
 
 def _lrclib(artist: str, title: str, album: str,
@@ -70,6 +108,7 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
     order = [mxm, lrclib] if provider == "musixmatch" else [lrclib, mxm]
     for source in order:
         lrc = source()
-        if lrc:
+        # Never accept generated placeholder text, whatever returned it.
+        if lrc and not looks_synthetic(lrc):
             return lrc
     return None
