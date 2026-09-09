@@ -103,7 +103,8 @@ class TestProbeTrack:
                             lambda *a, **k: _response(payload))
         found = mxm.probe_track("t", "Band", "Song", 200)
         assert found == {"track_id": 7, "has_richsync": True,
-                         "artist": "Band", "title": "Song", "length": 200}
+                         "artist": "Band", "title": "Song", "length": 200,
+                         "looks_right": True}
 
     def test_a_retryable_status_defers_rather_than_reporting_a_miss(
             self, monkeypatch):
@@ -230,3 +231,73 @@ class TestRichsyncEstimate:
         first = len(seen)
         estimate_richsync_coverage(config, sample=5, seed=1)
         assert first == 5 and len(seen) == 10
+
+
+class TestTheMatchHasToBeTheTrack:
+    """The first probe run reported a 100% match rate across a library
+    with rough tags. Musixmatch answers with its best effort rather than
+    nothing, so an unchecked match rate is always 100% - it measured that
+    a request succeeded, not that the right song came back."""
+
+    def _found(self, artist, title):
+        return {"track_id": 1, "has_richsync": True,
+                "artist": artist, "title": title}
+
+    @pytest.mark.parametrize("artist,title", [
+        ("Dolly Parton", "9 to 5"),
+        ("Dolly Parton", "9 to 5 (Remastered)"),      # same performance
+        ("Dolly Parton & Friends", "9 to 5"),          # a wider credit
+    ])
+    def test_the_right_track_is_kept(self, artist, title):
+        assert mxm.looks_like_the_track(
+            "Dolly Parton", "9 to 5", self._found(artist, title))
+
+    @pytest.mark.parametrize("artist,title", [
+        ("Dolly Parton", "Jolene"),                    # a different song
+        ("Sheena Easton", "9 to 5"),                   # a different artist
+        ("Dolly Parton", "9 to 5 (Live)"),             # a different take
+    ])
+    def test_something_else_is_refused(self, artist, title):
+        assert not mxm.looks_like_the_track(
+            "Dolly Parton", "9 to 5", self._found(artist, title))
+
+    def test_an_absent_name_is_not_a_disagreement(self):
+        # The Apple path learned this: only a real conflict rejects.
+        assert mxm.looks_like_the_track(
+            "Dolly Parton", "9 to 5", self._found("", ""))
+
+    def test_the_real_world_case_that_gave_it_away(self):
+        # Reported by the probe as a match: the artist had been appended
+        # to the title, and Musixmatch answered anyway.
+        assert not mxm.looks_like_the_track(
+            "Natasha Bedingfield", "Soulmate - Natasha Bedingfield",
+            self._found("Nickelback", "Savin' Me"))
+
+
+class TestMusixmatchsOwnStatus:
+    """Every response is HTTP 200 and carries the real status inside the
+    body. Reading only the HTTP code made "this account cannot have
+    richsync" look identical to "this track has no word timing"."""
+
+    def test_the_inner_status_is_read(self):
+        assert mxm.inner_status(
+            {"message": {"header": {"status_code": 401}}}) == 401
+
+    @pytest.mark.parametrize("payload", [
+        {}, {"message": {}}, {"message": {"header": {}}},
+        {"message": {"header": {"status_code": "no"}}}, None, [],
+    ])
+    def test_a_shape_without_one_is_not_invented(self, payload):
+        assert mxm.inner_status(payload) is None
+
+    def test_a_refusal_is_recorded_for_diagnosis(self, monkeypatch):
+        payload = {"message": {"header": {"status_code": 401}, "body": {}}}
+        monkeypatch.setattr(mxm.requests, "get",
+                            lambda *a, **k: _response(payload))
+        assert mxm.fetch_richsync("t", 7) is None
+        assert mxm.LAST_RICHSYNC_STATUS == 401
+
+    def test_every_candidate_track_is_visible_not_just_the_first(self):
+        payload = {"a": {"track_id": 1, "has_richsync": 0},
+                   "b": [{"track_id": 2, "has_richsync": 1}]}
+        assert len(mxm._all_tracks(payload)) == 2

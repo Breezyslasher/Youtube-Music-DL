@@ -39,6 +39,10 @@ SUBTITLES_URL = "https://apic-desktop.musixmatch.com/ws/1.1/macro.subtitles.get"
 # namespace says; the per-word timing lives behind its own endpoint and
 # needs the track id the macro call already hands back.
 RICHSYNC_URL = "https://apic-desktop.musixmatch.com/ws/1.1/track.richsync.get"
+# Musixmatch's own status from the last richsync call, for diagnostics.
+# 401 there means the account cannot have word-by-word at all, which is a
+# different answer from the track not having any.
+LAST_RICHSYNC_STATUS = None
 TIMEOUT = 12
 # A desktop-app-ish UA; apic-desktop rejects obviously-scripted clients.
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -115,6 +119,47 @@ def _query(params: dict) -> Optional[str]:
     if body and _LRC_TIMESTAMP.search(body):
         return body.strip()
     return None  # plain-only or empty -> skipped (timed only)
+
+
+def inner_status(data) -> Optional[int]:
+    """Musixmatch's own status, which is not the HTTP one.
+
+    Every response is wrapped in message.header.status_code, and the
+    outer request is 200 whatever it says. 401 (not entitled), 402 and
+    404 all arrived here as a plain empty result, indistinguishable from
+    "this track has no word timing" - so a subscription wall looked
+    exactly like a catalogue gap.
+    """
+    if not isinstance(data, dict):
+        return None
+    message = data.get("message")
+    if isinstance(message, dict):
+        header = message.get("header")
+        if isinstance(header, dict):
+            code = header.get("status_code")
+            if isinstance(code, (int, float)):
+                return int(code)
+    return None
+
+
+def _all_tracks(obj, found=None) -> list:
+    """Every candidate track object in a response, not just the first.
+
+    A macro response nests several calls, and taking whichever dict
+    happened to come first is how the probe reported that 100% of a
+    library had word-by-word lyrics.
+    """
+    if found is None:
+        found = []
+    if isinstance(obj, dict):
+        if "track_id" in obj and "has_richsync" in obj:
+            found.append(obj)
+        for value in obj.values():
+            _all_tracks(value, found)
+    elif isinstance(obj, list):
+        for value in obj:
+            _all_tracks(value, found)
+    return found
 
 
 def _find_track(obj) -> Optional[dict]:
@@ -247,13 +292,44 @@ def probe_track(token: str, artist: str, title: str,
         return None
     if not track:
         return None
-    return {
+    found = {
         "track_id": track.get("track_id"),
         "has_richsync": bool(track.get("has_richsync")),
         "artist": track.get("artist_name") or "",
         "title": track.get("track_name") or "",
         "length": track.get("track_length"),
     }
+    found["looks_right"] = looks_like_the_track(artist, title, found)
+    return found
+
+
+def looks_like_the_track(artist: str, title: str, found: dict) -> bool:
+    """Is this actually the track we asked about?
+
+    Musixmatch answers with its best effort rather than nothing, so
+    "matched" on its own means only that a request succeeded - the first
+    probe reported a 100% match rate on a library with rough tags, which
+    is the tell. The Apple path has required this all along; the
+    Musixmatch path never did.
+    """
+    from .matching import base_title, normalize, normalize_artist, _ratio
+    from .matching import significant_qualifiers
+
+    theirs_title = found.get("title") or ""
+    theirs_artist = found.get("artist") or ""
+    # An absent name is not a disagreement - only a real one rejects.
+    if theirs_title and title:
+        if _ratio(normalize(base_title(title)),
+                  normalize(base_title(theirs_title))) < 0.85:
+            return False
+        if significant_qualifiers(title) != significant_qualifiers(theirs_title):
+            return False
+    if theirs_artist and artist:
+        ours, mine = normalize_artist(artist), normalize_artist(theirs_artist)
+        if _ratio(ours, mine) < 0.75 and not (ours.startswith(mine)
+                                              or mine.startswith(ours)):
+            return False
+    return True
 
 
 def fetch_richsync(token: str, track_id, duration_seconds: Optional[int] = None
@@ -283,6 +359,8 @@ def fetch_richsync(token: str, track_id, duration_seconds: Optional[int] = None
         data = response.json()
     except ValueError:
         return None
+    global LAST_RICHSYNC_STATUS
+    LAST_RICHSYNC_STATUS = inner_status(data)
     body = _find_richsync_body(data)
     return richsync_to_lrc(body) if body else None
 

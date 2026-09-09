@@ -535,6 +535,100 @@ def cmd_apple_explore(args, config: Config) -> int:
     return 0
 
 
+def cmd_richsync_raw(args, config: Config) -> int:
+    """Show exactly what Musixmatch answers for one track.
+
+    The first probe run reported that 100% of a library matched and 100%
+    had richsync, and then nothing came back when the flag was tested.
+    Numbers that clean are an instrument fault, not a result: Musixmatch
+    returns a best-effort match for anything, and its real status hides
+    inside the body while the HTTP request says 200 regardless. This
+    prints both, so the difference between "not entitled" and "no word
+    timing for this track" is visible.
+    """
+    import json as _json
+
+    import requests
+
+    from . import __version__
+    from . import musixmatch as mxm
+
+    print("beetdrop %s" % __version__)
+    token = config.musixmatch_token
+    if not token:
+        try:
+            token = mxm.fetch_token()
+            print("fetched a fresh usertoken")
+        except mxm.MusixmatchError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+    else:
+        print("using the configured usertoken")
+
+    params = {
+        "format": "json", "namespace": "lyrics_richsynched",
+        "subtitle_format": "lrc", "app_id": mxm.APP_ID, "usertoken": token,
+        "q_track": args.title, "q_artist": args.artist,
+    }
+    if args.duration:
+        params["q_duration"] = str(args.duration)
+    print("\n--- macro.subtitles.get ---")
+    response = requests.get(mxm.SUBTITLES_URL, params=params,
+                            headers={"User-Agent": mxm.UA}, timeout=mxm.TIMEOUT)
+    print("HTTP %s" % response.status_code)
+    try:
+        data = response.json()
+    except ValueError:
+        print("body is not JSON: %s" % response.text[:400])
+        return 2
+    print("musixmatch status %s" % mxm.inner_status(data))
+    tracks = mxm._all_tracks(data)
+    print("candidate track objects found: %d" % len(tracks))
+    for track in tracks[:5]:
+        print("  id=%s  has_richsync=%s  has_subtitles=%s" % (
+            track.get("track_id"), track.get("has_richsync"),
+            track.get("has_subtitles")))
+        print("    %s - %s  (%ss)" % (
+            track.get("artist_name"), track.get("track_name"),
+            track.get("track_length")))
+    if not tracks:
+        print("  none - nothing to ask for richsync")
+        return 2
+
+    track_id = tracks[0].get("track_id")
+    print("\n--- track.richsync.get (track_id=%s) ---" % track_id)
+    rich = requests.get(
+        mxm.RICHSYNC_URL,
+        params={"format": "json", "app_id": mxm.APP_ID, "usertoken": token,
+                "track_id": str(track_id)},
+        headers={"User-Agent": mxm.UA}, timeout=mxm.TIMEOUT)
+    print("HTTP %s" % rich.status_code)
+    try:
+        payload = rich.json()
+    except ValueError:
+        print("body is not JSON: %s" % rich.text[:400])
+        return 2
+    status = mxm.inner_status(payload)
+    print("musixmatch status %s" % status)
+    if status == 401:
+        print("  -> this account is not entitled to richsync. That is a "
+              "subscription wall, not a gap in the catalogue: no amount of "
+              "sampling will find word-by-word here.")
+    elif status == 404:
+        print("  -> Musixmatch has no richsync for this track.")
+    body = mxm._find_richsync_body(payload)
+    if not body:
+        print("no richsync_body in the response:")
+        print("  " + _json.dumps(payload)[:500])
+        return 0
+    print("richsync_body: %d characters" % len(body))
+    lrc = mxm.richsync_to_lrc(body)
+    print("\nrendered:")
+    for line in (lrc or "").splitlines()[:6]:
+        print("  " + line)
+    return 0
+
+
 def cmd_richsync_probe(args, config: Config) -> int:
     """Is Musixmatch worth adding as a second word-by-word source?
 
@@ -564,6 +658,9 @@ def cmd_richsync_probe(args, config: Config) -> int:
     print("Of %d tracks with no word timing, %d were sampled." % (
         est.population, est.checked))
     print("  Musixmatch matched:      %d (%.0f%%)" % (est.matched, est.match_pct))
+    if est.wrong_match:
+        print("  answered with a different song: %d (not counted as matches)"
+              % est.wrong_match)
     print("  of those, has richsync:  %d (%.0f%%)" % (est.claimed, est.pct))
     print("  share of everything asked: %.0f%% +/- %.0f" % (
         est.pct_of_all, est.margin))
@@ -588,6 +685,10 @@ def cmd_richsync_probe(args, config: Config) -> int:
     if args.show_matches and est.matched_examples:
         print("\nWhat Musixmatch matched each track to:")
         for line in est.matched_examples:
+            print("  " + line)
+    if est.wrong_match_files:
+        print("\nAnswered with something else:")
+        for line in est.wrong_match_files[:10]:
             print("  " + line)
     return 0
 
@@ -804,6 +905,15 @@ def main(argv=None) -> int:
                         help="print what Musixmatch matched each track to, "
                              "so a wrong match is visible")
     p_rich.set_defaults(func=cmd_richsync_probe)
+
+    p_rraw = sub.add_parser(
+        "richsync-raw",
+        help="show exactly what Musixmatch answers for one track, "
+             "including its own status code, which the HTTP status hides")
+    p_rraw.add_argument("artist")
+    p_rraw.add_argument("title")
+    p_rraw.add_argument("--duration", type=int, default=0)
+    p_rraw.set_defaults(func=cmd_richsync_raw)
 
     p_tokens = sub.add_parser(
         "apple-tokens",
