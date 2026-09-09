@@ -582,41 +582,75 @@ def cmd_richsync_raw(args, config: Config) -> int:
         print("body is not JSON: %s" % response.text[:400])
         return 2
     print("musixmatch status %s" % mxm.inner_status(data))
+
+    # The macro wraps several calls, each with its own status. A matcher
+    # that failed while the envelope says 200 is how an unrelated track
+    # came back looking like a match.
+    calls = (((data.get("message") or {}).get("body") or {})
+             .get("macro_calls") or {})
+    if calls:
+        print("macro calls:")
+        for name in sorted(calls):
+            print("  %-28s status %s" % (name, mxm.inner_status(calls[name])))
+    else:
+        print("no macro_calls in the response - not the shape expected")
+
     tracks = mxm._all_tracks(data)
-    print("candidate track objects found: %d" % len(tracks))
+    print("\ncandidate track objects found: %d" % len(tracks))
     for track in tracks[:5]:
         print("  id=%s  has_richsync=%s  has_subtitles=%s" % (
             track.get("track_id"), track.get("has_richsync"),
             track.get("has_subtitles")))
-        print("    %s - %s  (%ss)" % (
+        print("    %s - %s  (%s ms)" % (
             track.get("artist_name"), track.get("track_name"),
             track.get("track_length")))
+        print("    looks like what we asked for: %s" % (
+            mxm.looks_like_the_track(args.artist, args.title, {
+                "artist": track.get("artist_name"),
+                "title": track.get("track_name")})))
     if not tracks:
         print("  none - nothing to ask for richsync")
         return 2
 
+    # The line-level source rides this same call, so a wrong track here
+    # is not only a richsync problem.
+    subtitle = mxm._find_subtitle_body(data)
+    print("\nline-level subtitle in the same response: %s" % (
+        "yes, %d chars" % len(subtitle) if subtitle else "none"))
+    if subtitle:
+        print("  first line: %s" % subtitle.splitlines()[0][:90])
+
     track_id = tracks[0].get("track_id")
-    print("\n--- track.richsync.get (track_id=%s) ---" % track_id)
-    rich = requests.get(
-        mxm.RICHSYNC_URL,
-        params={"format": "json", "app_id": mxm.APP_ID, "usertoken": token,
-                "track_id": str(track_id)},
-        headers={"User-Agent": mxm.UA}, timeout=mxm.TIMEOUT)
-    print("HTTP %s" % rich.status_code)
-    try:
-        payload = rich.json()
-    except ValueError:
-        print("body is not JSON: %s" % rich.text[:400])
-        return 2
-    status = mxm.inner_status(payload)
-    print("musixmatch status %s" % status)
-    if status == 401:
-        print("  -> this account is not entitled to richsync. That is a "
-              "subscription wall, not a gap in the catalogue: no amount of "
-              "sampling will find word-by-word here.")
-    elif status == 404:
-        print("  -> Musixmatch has no richsync for this track.")
-    body = mxm._find_richsync_body(payload)
+    # apic-desktop answered track.richsync.get with 404 "endpoint not
+    # found", which is the server saying the route does not exist rather
+    # than the track having no words. So try the spellings it might use
+    # and report which, if any, it serves.
+    payload, status = None, None
+    for url, params in mxm.richsync_attempts(token, track_id):
+        print("\n--- %s ---" % url.rsplit("/", 1)[-1])
+        rich = requests.get(url, params=params,
+                            headers={"User-Agent": mxm.UA}, timeout=mxm.TIMEOUT)
+        print("HTTP %s" % rich.status_code)
+        try:
+            payload = rich.json()
+        except ValueError:
+            print("body is not JSON: %s" % rich.text[:300])
+            continue
+        status = mxm.inner_status(payload)
+        hint = (((payload.get("message") or {}).get("header") or {})
+                .get("hint") or "")
+        print("musixmatch status %s%s" % (status, "  hint: %s" % hint if hint else ""))
+        if status == 401:
+            print("  -> the account is not entitled to richsync. A "
+                  "subscription wall, not a gap in the catalogue.")
+        elif hint == "endpoint not found":
+            print("  -> this host does not serve that route at all.")
+            continue
+        elif status == 404:
+            print("  -> served, but no richsync for this track.")
+        if mxm._find_richsync_body(payload):
+            break
+    body = mxm._find_richsync_body(payload or {})
     if not body:
         print("no richsync_body in the response:")
         print("  " + _json.dumps(payload)[:500])
@@ -637,8 +671,12 @@ def cmd_richsync_probe(args, config: Config) -> int:
     much of the part Apple already fails on it can cover. Measured on a
     sample before any of it is built, the way the Apple estimate was.
     """
+    from . import __version__
     from .backfill import estimate_richsync_coverage
 
+    # Printed so a run can be tied to a build. Without it, a result from
+    # a stale image is indistinguishable from a fresh one.
+    print("beetdrop %s" % __version__)
     est = estimate_richsync_coverage(config, sample=args.sample,
                                      verify=args.verify,
                                      on_detail=lambda text: print(text))

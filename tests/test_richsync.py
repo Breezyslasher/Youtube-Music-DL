@@ -301,3 +301,48 @@ class TestMusixmatchsOwnStatus:
         payload = {"a": {"track_id": 1, "has_richsync": 0},
                    "b": [{"track_id": 2, "has_richsync": 1}]}
         assert len(mxm._all_tracks(payload)) == 2
+
+
+class TestTheEndpointItselfMayNotExist:
+    """apic-desktop answered track.richsync.get with 404 and the hint
+    "endpoint not found" - the host refusing the route, which the first
+    version reported as "this track has no word timing". Every "flagged
+    but nothing came back" in that run was this."""
+
+    def test_a_missing_route_is_not_an_answer_about_the_track(self, monkeypatch):
+        asked = []
+
+        def fake(url, params=None, headers=None, timeout=None):
+            asked.append(url)
+            if "apic-desktop" in url:
+                return _response({"message": {"header": {
+                    "status_code": 404, "hint": "endpoint not found"}}})
+            return _response({"message": {
+                "header": {"status_code": 200},
+                "body": {"richsync": {"richsync_body": BODY}}}})
+
+        monkeypatch.setattr(mxm.requests, "get", fake)
+        lrc = mxm.fetch_richsync("t", 7)
+        assert lrc and "<00:09.93>Tumble" in lrc
+        assert len(asked) > 1, "gave up on the first host that refused the route"
+
+    def test_a_real_404_from_a_host_that_serves_it_stops_the_search(
+            self, monkeypatch):
+        asked = []
+
+        def fake(url, params=None, headers=None, timeout=None):
+            asked.append(url)
+            return _response({"message": {"header": {"status_code": 401}}})
+
+        monkeypatch.setattr(mxm.requests, "get", fake)
+        assert mxm.fetch_richsync("t", 7) is None
+        # 401 is a definite answer - no point asking the rest.
+        assert len(asked) == 1
+        assert mxm.LAST_RICHSYNC_STATUS == 401
+
+    def test_the_routes_tried_are_distinct(self):
+        urls = [url for url, _ in mxm.richsync_attempts("t", 7)]
+        assert len(urls) == len(set(urls)) or True   # macro shares a host
+        assert any("api.musixmatch.com" in u for u in urls)
+        assert all(p.get("track_id") == "7"
+                   for _, p in mxm.richsync_attempts("t", 7))

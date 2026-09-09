@@ -43,6 +43,9 @@ RICHSYNC_URL = "https://apic-desktop.musixmatch.com/ws/1.1/track.richsync.get"
 # 401 there means the account cannot have word-by-word at all, which is a
 # different answer from the track not having any.
 LAST_RICHSYNC_STATUS = None
+PUBLIC_RICHSYNC_URL = "https://api.musixmatch.com/ws/1.1/track.richsync.get"
+MACRO_RICHSYNC_URL = (
+    "https://apic-desktop.musixmatch.com/ws/1.1/macro.subtitles.get")
 TIMEOUT = 12
 # A desktop-app-ish UA; apic-desktop rejects obviously-scripted clients.
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -332,37 +335,60 @@ def looks_like_the_track(artist: str, title: str, found: dict) -> bool:
     return True
 
 
+def richsync_attempts(token: str, track_id) -> list:
+    """The routes worth trying for word-by-word, in order.
+
+    apic-desktop answered track.richsync.get with 404 and the hint
+    "endpoint not found" - the host saying the route does not exist,
+    which is a different answer from the track having no words, and one
+    the first version of this reported as the latter. The public API host
+    does serve it, and the macro form is what the desktop app itself
+    appears to use, so all three are worth asking before concluding
+    anything about coverage.
+    """
+    base = {"format": "json", "app_id": APP_ID, "usertoken": token,
+            "track_id": str(track_id)}
+    return [
+        (RICHSYNC_URL, dict(base)),
+        (PUBLIC_RICHSYNC_URL, dict(base)),
+        (MACRO_RICHSYNC_URL, dict(base, namespace="lyrics_richsynched",
+                                  subtitle_format="mxm")),
+    ]
+
+
 def fetch_richsync(token: str, track_id, duration_seconds: Optional[int] = None
                    ) -> Optional[str]:
     """Enhanced LRC for one Musixmatch track id, or None when there is no
     word-by-word version. Never raises for a plain miss."""
+    global LAST_RICHSYNC_STATUS
     if not token or not track_id:
         return None
-    params = {
-        "format": "json",
-        "app_id": APP_ID,
-        "usertoken": token,
-        "track_id": str(track_id),
-    }
-    if duration_seconds:
-        params["f_subtitle_length"] = str(int(duration_seconds))
-    try:
-        response = requests.get(RICHSYNC_URL, params=params,
-                                headers={"User-Agent": UA}, timeout=TIMEOUT)
-    except requests.RequestException as exc:
-        raise MusixmatchUnavailable("could not reach Musixmatch: %s" % exc) from exc
-    if response.status_code in RETRYABLE_STATUS:
-        raise MusixmatchUnavailable("Musixmatch returned %s" % response.status_code)
-    try:
-        if not response.ok:
-            return None
-        data = response.json()
-    except ValueError:
-        return None
-    global LAST_RICHSYNC_STATUS
-    LAST_RICHSYNC_STATUS = inner_status(data)
-    body = _find_richsync_body(data)
-    return richsync_to_lrc(body) if body else None
+    LAST_RICHSYNC_STATUS = None
+    for url, params in richsync_attempts(token, track_id):
+        try:
+            response = requests.get(url, params=params,
+                                    headers={"User-Agent": UA}, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            raise MusixmatchUnavailable(
+                "could not reach Musixmatch: %s" % exc) from exc
+        if response.status_code in RETRYABLE_STATUS:
+            raise MusixmatchUnavailable(
+                "Musixmatch returned %s" % response.status_code)
+        try:
+            data = response.json() if response.ok else {}
+        except ValueError:
+            continue
+        LAST_RICHSYNC_STATUS = inner_status(data)
+        body = _find_richsync_body(data)
+        if body:
+            return richsync_to_lrc(body)
+        # "endpoint not found" is this host refusing the route, not an
+        # answer about the track - keep asking the others.
+        hint = (((data.get("message") or {}).get("header") or {})
+                .get("hint") or "")
+        if hint != "endpoint not found" and LAST_RICHSYNC_STATUS not in (None, 404):
+            break
+    return None
 
 
 def _find_richsync_body(obj) -> Optional[str]:
