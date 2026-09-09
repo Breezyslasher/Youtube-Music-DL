@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets as _secrets
 import time
 from contextlib import asynccontextmanager
@@ -627,6 +628,64 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             return {"results": await asyncio.to_thread(run)}
         except apple.AppleError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    def _lyrics_for(song_id: str, word: bool):
+        config = effective_config()
+        return apple.lyrics_for_song(
+            apple.fetch_developer_token(), config.apple_token,
+            config.apple_storefront or "us", song_id, word_by_word=word)
+
+    @app.get("/api/lyrics/preview", dependencies=[protected])
+    async def api_lyrics_preview(song_id: str, word: bool = False):
+        """The LRC for one catalog id, to read before saving it.
+
+        No library track involved: this is for looking a song up and
+        taking the file, which is a different job from filling a sidecar
+        in and needs no matching at all.
+        """
+        if not song_id.strip():
+            raise HTTPException(status_code=400, detail="no song chosen")
+        try:
+            lrc = await asyncio.to_thread(_lyrics_for, song_id.strip(), word)
+        except apple.AppleError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if not lrc:
+            # Asking for words and getting none is not this: a track Apple
+            # has only line timing for still comes back, rendered
+            # line-level. This is Apple having no lyrics at all.
+            raise HTTPException(status_code=404,
+                                detail="Apple has no lyrics for that one")
+        from .lyrics import has_word_timing
+        # word_level says what actually came back, which is not always
+        # what was asked for - the page tells the person which they got.
+        return {"lrc": lrc, "word_level": has_word_timing(lrc),
+                "lines": len(lrc.splitlines())}
+
+    @app.get("/api/lyrics/download", dependencies=[protected])
+    async def api_lyrics_download(song_id: str, word: bool = False,
+                                  name: str = ""):
+        """The same LRC as a file the browser will save.
+
+        Served as an attachment rather than handed to the page to turn
+        into a blob: a download started by script is what mobile browsers
+        are least reliable about, and this is a phone-first app.
+        """
+        if not song_id.strip():
+            raise HTTPException(status_code=400, detail="no song chosen")
+        try:
+            lrc = await asyncio.to_thread(_lyrics_for, song_id.strip(), word)
+        except apple.AppleError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if not lrc:
+            raise HTTPException(status_code=404, detail="no lyrics for that one")
+        # The name comes from the page and ends up in a header, so it is
+        # reduced to something that cannot carry a newline or a quote out.
+        safe = re.sub(r"[^\w \-.()&',]+", "_", name or "lyrics").strip(" .")[:120]
+        if not safe.lower().endswith(".lrc"):
+            safe += ".lrc"
+        return Response(
+            content=lrc, media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="%s"' % safe})
 
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False,

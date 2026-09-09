@@ -34,7 +34,12 @@
               @click="setSearchType('albums')">Albums</button>
       <button type="button" :class="{active: searchType === 'videos'}"
               @click="setSearchType('videos')">Videos</button>
-      <select v-if="searchType !== 'videos'" v-model="grabFormat" class="formatpick" aria-label="Format for grabs">
+      <button type="button" :class="{active: searchType === 'lyrics'}"
+              @click="setSearchType('lyrics')">Lyrics</button>
+      <label v-if="searchType === 'lyrics'" class="wordpick">
+        <input type="checkbox" v-model="lyricsWordByWord"> word-by-word
+      </label>
+      <select v-if="searchType !== 'videos' && searchType !== 'lyrics'" v-model="grabFormat" class="formatpick" aria-label="Format for grabs">
         <option value="">Format: default</option>
         <option value="opus">Format: opus</option>
         <option value="m4a">Format: m4a</option>
@@ -43,7 +48,7 @@
     </div>
     <div class="searchrow">
       <input v-model="query" type="search" inputmode="search" enterkeyhint="search"
-             :placeholder="searchType === 'albums' ? 'Search an album...' : (searchType === 'videos' ? 'Search a music video...' : 'Search a song...')"
+             :placeholder="searchType === 'albums' ? 'Search an album...' : (searchType === 'videos' ? 'Search a music video...' : (searchType === 'lyrics' ? 'Search lyrics to download...' : 'Search a song...'))"
              autocomplete="off" autocapitalize="off">
       <button type="submit" class="primary" :disabled="searching || !query.trim()">
         {{ searching ? 'Searching' : 'Search' }}
@@ -52,7 +57,12 @@
   </form>
 
   <main class="results">
-    <p v-if="!searched && !results.length" class="hint">
+    <p v-if="!searched && !results.length && searchType === 'lyrics'" class="hint">
+      Search Apple Music for a song and save its .lrc straight to this
+      device. Nothing is matched against your library and nothing is
+      written to it - this is just the lyrics file.
+    </p>
+    <p v-if="!searched && !results.length && searchType !== 'lyrics'" class="hint">
       Search for a song, album, or music video, check the duration, and
       grab it. Beetdrop matches it on MusicBrainz, tags it fully with cover
       art, and files it into your library. Music videos are filed Kodi-style
@@ -60,7 +70,30 @@
     </p>
     <p v-if="searched && !searching && !results.length" class="hint">No results.</p>
 
-    <template v-if="resultsType === 'songs' || resultsType === 'videos'">
+    <template v-if="resultsType === 'lyrics'">
+      <article v-for="r in results" :key="r.id" class="card lyriccard">
+        <div class="meta">
+          <span class="title">{{ r.title }}</span>
+          <span class="artist">{{ r.artist }}<template v-if="r.album"> &middot; {{ r.album }}</template></span>
+          <span class="duration">
+            {{ fmtDuration(r.duration) }}<template v-if="r.year"> &middot; {{ r.year }}</template>
+          </span>
+        </div>
+        <div class="lyricactions">
+          <button type="button" @click="previewLyrics(r)" :disabled="r.loading">
+            {{ r.loading ? 'Loading...' : (r.lrc ? 'Hide' : 'Preview') }}
+          </button>
+          <a class="grab primary" :href="lyricsDownloadUrl(r)"
+             :download="lyricsFileName(r)">Download .lrc</a>
+        </div>
+        <p v-if="r.lrc && lyricsWordByWord && !r.gotWords" class="note lyricnote">
+          Apple has only line-level timing for this one, so that is what
+          the file will contain.
+        </p>
+        <pre v-if="r.lrc" class="lyricpreview">{{ r.lrc }}</pre>
+      </article>
+    </template>
+    <template v-else-if="resultsType === 'songs' || resultsType === 'videos'">
       <article v-for="r in results" :key="r.video_id" class="card">
         <img v-if="r.thumbnail_url" class="thumb" :src="r.thumbnail_url" alt="" loading="lazy">
         <div v-else class="thumb thumb-blank"></div>
