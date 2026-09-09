@@ -7,6 +7,8 @@ Settings page were not configured, and scan-lyrics --upgrade - which
 asks Apple and nothing else - became a silent no-op.
 """
 
+import pytest
+
 from beetdrop.config import Config
 from beetdrop.db import Store
 from beetdrop.settings import apply_stored_settings, config_with_settings
@@ -81,3 +83,69 @@ class TestMergeRules:
         base = a_config(tmp_path)
         apply_stored_settings(base, SAVED)
         assert base.apple_token != "mut-from-the-ui"
+
+
+class TestTheCliUsesTheSameDatabase:
+    """Decisions live in SQLite, and only the web UI was opening it. A
+    CLI scan therefore matched everything afresh: a track identified by
+    hand was looked up again, and on an overwriting pass - --upgrade or
+    --redo-words - the hand-picked lyrics were replaced by whatever
+    matching chose. Refusals went unrecorded, so nothing scanned from
+    the CLI ever reached the review queue either."""
+
+    def _args(self, **over):
+        import argparse
+        values = dict(estimate=None, list=None, stats=False, refresh=False,
+                      upgrade=False, redo_words=False, show_matches=False)
+        values.update(over)
+        return argparse.Namespace(**values)
+
+    def _config(self, tmp_path):
+        from beetdrop.config import Config
+        music = tmp_path / "m"
+        music.mkdir()
+        return Config(music_root=music, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def test_a_scan_is_handed_a_store(self, tmp_path, monkeypatch):
+        import beetdrop.backfill as backfill
+        from beetdrop.__main__ import cmd_scan_lyrics
+        from beetdrop.db import Store
+
+        seen = {}
+
+        def fake(config, **kwargs):
+            seen.update(kwargs)
+            return backfill.BackfillResult(0, 0, 0, 0)
+
+        monkeypatch.setattr(backfill, "backfill_lyrics", fake)
+        config = self._config(tmp_path)
+        assert cmd_scan_lyrics(self._args(), config) == 0
+        assert isinstance(seen.get("store"), Store)
+
+    def test_a_decision_made_in_the_ui_is_honoured_by_the_cli(self, tmp_path,
+                                                              monkeypatch):
+        import beetdrop.backfill as backfill
+        from beetdrop.__main__ import cmd_scan_lyrics
+        from beetdrop.db import Store
+
+        config = self._config(tmp_path)
+        track = config.music_root / "A" / "song.opus"
+        track.parent.mkdir(parents=True)
+        track.write_bytes(b"x")
+        Store(config.db_path).set_choice(str(track), "1369380479")
+
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr(
+            backfill, "fetch_synced_lyrics",
+            lambda *a, **k: pytest.fail("matched afresh despite a decision"))
+        asked = []
+        monkeypatch.setattr(backfill, "_lyrics_by_choice",
+                            lambda cfg, song_id, word_by_word=False:
+                            asked.append(song_id) or "[00:01.00]picked")
+
+        assert cmd_scan_lyrics(self._args(), config) == 0
+        assert asked == ["1369380479"]
+        assert track.with_suffix(".lrc").read_text() == "[00:01.00]picked"
