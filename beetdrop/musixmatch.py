@@ -14,6 +14,7 @@ token from the Musixmatch desktop app instead.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Optional
 
@@ -34,6 +35,10 @@ RETRYABLE_STATUS = (408, 425, 429, 500, 502, 503, 504)
 APP_ID = "web-desktop-app-v1.0"
 TOKEN_URL = "https://apic-desktop.musixmatch.com/ws/1.1/token.get"
 SUBTITLES_URL = "https://apic-desktop.musixmatch.com/ws/1.1/macro.subtitles.get"
+# Word-by-word. macro.subtitles.get returns line-level LRC whatever the
+# namespace says; the per-word timing lives behind its own endpoint and
+# needs the track id the macro call already hands back.
+RICHSYNC_URL = "https://apic-desktop.musixmatch.com/ws/1.1/track.richsync.get"
 TIMEOUT = 12
 # A desktop-app-ish UA; apic-desktop rejects obviously-scripted clients.
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -110,6 +115,193 @@ def _query(params: dict) -> Optional[str]:
     if body and _LRC_TIMESTAMP.search(body):
         return body.strip()
     return None  # plain-only or empty -> skipped (timed only)
+
+
+def _find_track(obj) -> Optional[dict]:
+    """The matched track object out of macro.subtitles.get's nested JSON.
+
+    Same defensive walk as _find_subtitle_body, for the same reason: the
+    macro response wraps several calls and its shape moves around.
+    """
+    if isinstance(obj, dict):
+        if "track_id" in obj and "has_richsync" in obj:
+            return obj
+        for value in obj.values():
+            found = _find_track(value)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_track(value)
+            if found:
+                return found
+    return None
+
+
+def _stamp(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0.0
+    minutes = int(seconds // 60)
+    return "%02d:%05.2f" % (minutes, seconds - minutes * 60)
+
+
+def richsync_to_lrc(raw: str) -> Optional[str]:
+    """Musixmatch richsync JSON to Enhanced (A2) LRC.
+
+    The body is a list of lines, each with a start "ts" and a list "l" of
+    fragments carrying the text "c" and an offset "o" measured from that
+    line's start. Fragments already include their own spacing, so they
+    are concatenated rather than joined - the same rule the Apple side
+    had to learn when its syllables came back spaced apart.
+    """
+    try:
+        rows = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+
+    lines = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            start = float(row.get("ts"))
+        except (TypeError, ValueError):
+            continue
+        fragments = row.get("l")
+        if not isinstance(fragments, list) or not fragments:
+            # A line with no per-word breakdown is still a real line.
+            text = " ".join(str(row.get("x") or "").split())
+            if text:
+                lines.append((start, "[%s]%s" % (_stamp(start), text)))
+            continue
+
+        pieces, running, gap = [], start, False
+        for fragment in fragments:
+            if not isinstance(fragment, dict):
+                continue
+            body = fragment.get("c")
+            if not isinstance(body, str):
+                continue
+            word = body.strip()
+            gap = gap or body[:1].isspace()
+            if not word:
+                gap = gap or bool(body)
+                continue
+            try:
+                at = start + float(fragment.get("o") or 0)
+            except (TypeError, ValueError):
+                at = running
+            # Time may not run backwards mid-line: a player renders that
+            # as a jump. Same rule as the Apple renderer.
+            if at < running:
+                at = running
+            running = at
+            if pieces and gap:
+                pieces.append(" ")
+            pieces.append("<%s>%s" % (_stamp(at), word))
+            gap = body[-1:].isspace()
+        if pieces:
+            lines.append((start, "[%s]%s" % (_stamp(start), "".join(pieces))))
+
+    if not lines:
+        return None
+    lines.sort(key=lambda pair: pair[0])
+    return "\n".join(line for _, line in lines)
+
+
+def probe_track(token: str, artist: str, title: str,
+                duration_seconds: Optional[int] = None) -> Optional[dict]:
+    """What Musixmatch matched this track to, and whether it claims to
+    have word-by-word lyrics for it.
+
+    One request - the same macro call the line-level fetch already makes,
+    read for the track object rather than the subtitle.
+    """
+    if not token or not artist or not title:
+        return None
+    params = {
+        "format": "json",
+        "namespace": "lyrics_richsynched",
+        "subtitle_format": "lrc",
+        "app_id": APP_ID,
+        "usertoken": token,
+        "q_track": title,
+        "q_artist": artist,
+    }
+    if duration_seconds:
+        params["q_duration"] = str(int(duration_seconds))
+    try:
+        response = requests.get(SUBTITLES_URL, params=params,
+                                headers={"User-Agent": UA}, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        raise MusixmatchUnavailable("could not reach Musixmatch: %s" % exc) from exc
+    if response.status_code in RETRYABLE_STATUS:
+        raise MusixmatchUnavailable("Musixmatch returned %s" % response.status_code)
+    try:
+        if not response.ok:
+            return None
+        track = _find_track(response.json())
+    except ValueError:
+        return None
+    if not track:
+        return None
+    return {
+        "track_id": track.get("track_id"),
+        "has_richsync": bool(track.get("has_richsync")),
+        "artist": track.get("artist_name") or "",
+        "title": track.get("track_name") or "",
+        "length": track.get("track_length"),
+    }
+
+
+def fetch_richsync(token: str, track_id, duration_seconds: Optional[int] = None
+                   ) -> Optional[str]:
+    """Enhanced LRC for one Musixmatch track id, or None when there is no
+    word-by-word version. Never raises for a plain miss."""
+    if not token or not track_id:
+        return None
+    params = {
+        "format": "json",
+        "app_id": APP_ID,
+        "usertoken": token,
+        "track_id": str(track_id),
+    }
+    if duration_seconds:
+        params["f_subtitle_length"] = str(int(duration_seconds))
+    try:
+        response = requests.get(RICHSYNC_URL, params=params,
+                                headers={"User-Agent": UA}, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        raise MusixmatchUnavailable("could not reach Musixmatch: %s" % exc) from exc
+    if response.status_code in RETRYABLE_STATUS:
+        raise MusixmatchUnavailable("Musixmatch returned %s" % response.status_code)
+    try:
+        if not response.ok:
+            return None
+        data = response.json()
+    except ValueError:
+        return None
+    body = _find_richsync_body(data)
+    return richsync_to_lrc(body) if body else None
+
+
+def _find_richsync_body(obj) -> Optional[str]:
+    if isinstance(obj, dict):
+        body = obj.get("richsync_body")
+        if isinstance(body, str) and body.strip():
+            return body
+        for value in obj.values():
+            found = _find_richsync_body(value)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_richsync_body(value)
+            if found:
+                return found
+    return None
 
 
 def fetch_synced(token: str, artist: str, title: str,

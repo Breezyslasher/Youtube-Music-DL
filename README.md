@@ -157,6 +157,8 @@ python -m beetdrop scan-lyrics [--refresh|--upgrade|--redo-words|--stats]  # bac
                                                # --refresh purges junk first
                                                # --upgrade re-fetches line-level as word-by-word
                                                # --redo-words re-renders every word-by-word .lrc
+python -m beetdrop richsync-probe [--sample N] [--verify N]  # is Musixmatch
+                                               # worth adding as a 2nd word source?
 python -m beetdrop serve [--host 0.0.0.0] [--port 8090]
 ```
 
