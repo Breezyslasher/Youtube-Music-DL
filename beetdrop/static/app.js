@@ -26,6 +26,7 @@ createApp({
       reviews: [],
       reviewTotal: 0,
       decidingReview: "",
+      clearingReviews: false,
       testingApple: false,
       appleStatus: "",
       appleOk: false,
@@ -367,6 +368,30 @@ createApp({
         }
       } finally {
         this.decidingReview = "";
+      }
+    },
+
+    async clearReviews() {
+      // Only the list goes. Saying so matters: the obvious fear is that
+      // this throws away lyrics or the decisions already made, and it
+      // does neither.
+      if (!window.confirm(
+          "Forget all " + this.reviewTotal + " track(s) waiting for a "
+          + "decision?\n\nNo lyrics are deleted and choices you have "
+          + "already made are kept. Tracks still refused will come back "
+          + "on the next scan.")) return;
+      this.clearingReviews = true;
+      try {
+        const body = await this.api("/api/lyrics/reviews", { method: "DELETE" });
+        this.reviews = [];
+        this.reviewTotal = 0;
+        this.showToast("Cleared " + (body.removed || 0) + " from the review queue");
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not clear it: " + err.message);
+        }
+      } finally {
+        this.clearingReviews = false;
       }
     },
 
