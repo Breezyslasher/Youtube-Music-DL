@@ -953,6 +953,65 @@ class TestScanButtonsPickTheRightPass:
         assert "scanLyrics(false, false, true)" in page
 
 
+class TestReviewQueueEndpoints:
+    """The review queue is a whole workflow with no test behind it, and
+    the page it drives has already shipped two wiring bugs."""
+
+    def _client(self, tmp_path):
+        music = tmp_path / "m"
+        music.mkdir()
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        return TestClient(create_app(config)), config
+
+    def test_an_empty_queue_reports_nothing(self, tmp_path):
+        client, _ = self._client(tmp_path)
+        with client:
+            body = client.get("/api/lyrics/reviews").json()
+        assert body == {"reviews": [], "total": 0}
+
+    def test_clearing_an_empty_queue_removes_nothing(self, tmp_path):
+        client, _ = self._client(tmp_path)
+        with client:
+            body = client.delete("/api/lyrics/reviews").json()
+        assert body == {"removed": 0}
+
+    def test_clearing_empties_a_queue_that_had_entries(self, tmp_path,
+                                                       monkeypatch):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        (config.music_root / "A").mkdir(parents=True)
+        track = config.music_root / "A" / "song.opus"
+        track.write_bytes(b"x")
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def refuse(*a, **k):
+            if k.get("on_candidates"):
+                k["on_candidates"]([{"id": "1", "title": "Song (Live)",
+                                     "artist": "A", "reason": "live"}])
+            return None
+
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", refuse)
+        app = create_app(config)
+        with TestClient(app) as client:
+            # Same database the app opened, so the API sees what a scan wrote.
+            backfill_lyrics(config, store=Store(config.db_path))
+            assert client.get("/api/lyrics/reviews").json()["total"] == 1
+            assert client.delete("/api/lyrics/reviews").json() == {"removed": 1}
+            assert client.get("/api/lyrics/reviews").json()["total"] == 0
+
+    def test_the_page_offers_the_clear_button(self):
+        page = (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        source = (Path(__file__).parent.parent / "beetdrop" / "static"
+                  / "app.js").read_text()
+        assert 'click="clearReviews"' in page
+        assert "clearReviews()" in source
+        assert '"DELETE"' in source
+
+
 class TestWordCoverageEstimate:
     """Answering "is an upgrade pass worth running?" by running it costs
     two Apple calls per track and hours of waiting. A random sample

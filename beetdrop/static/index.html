@@ -365,6 +365,15 @@
         <p class="note" v-if="reviewTotal > reviews.length">
           Showing {{ reviews.length }} of {{ reviewTotal }}.
         </p>
+        <button type="button" class="retry" :disabled="clearingReviews"
+                @click="clearReviews">
+          {{ clearingReviews ? 'Clearing...' : 'Clear the review queue' }}
+        </button>
+        <p class="note">
+          Forgets the list only. No lyrics are deleted, and choices you
+          have already made are kept - a track still refused comes back
+          on the next scan.
+        </p>
       </details>
       <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
