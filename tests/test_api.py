@@ -288,3 +288,107 @@ class TestEvents:
         assert line.startswith("event: job\ndata: ")
         assert line.endswith("\n\n")
         assert json.loads(line.split("data: ", 1)[1]) == {"stage": "done", "progress": 100.0}
+
+
+class TestLyricsSearchAndDownload:
+    """Search Apple and take the .lrc, with no library track involved.
+
+    Filling in a sidecar needs a match to the file on disk; this does
+    not. It is a different job and it does no matching at all.
+    """
+
+    WORD = ("[00:09.93]<00:09.93>Tum<00:10.18>ble <00:10.32>out "
+            "<00:10.50>of <00:10.64>bed")
+    LINE = "[00:09.93]Tumble out of bed"
+
+    def _client(self, tmp_path, monkeypatch, lrc=None, boom=None):
+        from beetdrop import apple
+        music = tmp_path / "m"
+        music.mkdir()
+        config = Config(music_root=music, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda *a, **k: "d")
+        if boom is not None:
+            monkeypatch.setattr(apple, "lyrics_for_song", boom)
+        else:
+            monkeypatch.setattr(apple, "lyrics_for_song",
+                                lambda *a, **k: lrc)
+        return TestClient(create_app(config))
+
+    def test_preview_returns_the_file_and_says_it_is_word_level(
+            self, tmp_path, monkeypatch):
+        with self._client(tmp_path, monkeypatch, self.WORD) as client:
+            body = client.get(
+                "/api/lyrics/preview?song_id=1&word=true").json()
+        assert body["lrc"] == self.WORD
+        assert body["word_level"] is True and body["lines"] == 1
+
+    def test_asking_for_words_and_getting_lines_is_reported_not_refused(
+            self, tmp_path, monkeypatch):
+        # Apple having only line timing for a track is a normal answer,
+        # not a failure - the page says which was actually returned.
+        with self._client(tmp_path, monkeypatch, self.LINE) as client:
+            response = client.get("/api/lyrics/preview?song_id=1&word=true")
+        assert response.status_code == 200
+        assert response.json()["word_level"] is False
+
+    def test_no_lyrics_at_all_is_a_404(self, tmp_path, monkeypatch):
+        with self._client(tmp_path, monkeypatch, None) as client:
+            response = client.get("/api/lyrics/preview?song_id=1")
+        assert response.status_code == 404
+
+    def test_an_empty_song_id_asks_apple_nothing(self, tmp_path, monkeypatch):
+        def boom(*a, **k):
+            pytest.fail("asked Apple with no song chosen")
+
+        with self._client(tmp_path, monkeypatch, boom=boom) as client:
+            assert client.get("/api/lyrics/preview?song_id=%20").status_code == 400
+
+    def test_download_serves_it_as_a_named_attachment(self, tmp_path,
+                                                      monkeypatch):
+        with self._client(tmp_path, monkeypatch, self.WORD) as client:
+            response = client.get(
+                "/api/lyrics/download?song_id=1&word=true"
+                "&name=Dolly Parton - 9 to 5.lrc")
+        assert response.status_code == 200
+        assert response.text == self.WORD
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="Dolly Parton - 9 to 5.lrc"')
+
+    def test_a_name_that_could_break_the_header_is_reduced(self, tmp_path,
+                                                           monkeypatch):
+        # The name comes from the page and ends up in a header, so it must
+        # not be able to carry a quote or a newline out of it.
+        with self._client(tmp_path, monkeypatch, self.LINE) as client:
+            response = client.get(
+                '/api/lyrics/download?song_id=1&name=a"b%0Ac')
+        disposition = response.headers["content-disposition"]
+        assert '"' not in disposition.split("filename=", 1)[1][1:-1]
+        assert "\n" not in disposition and "\r" not in disposition
+
+    def test_a_name_without_the_suffix_gets_one(self, tmp_path, monkeypatch):
+        with self._client(tmp_path, monkeypatch, self.LINE) as client:
+            response = client.get("/api/lyrics/download?song_id=1&name=Song")
+        assert response.headers["content-disposition"].endswith('Song.lrc"')
+
+    def test_apple_being_unreachable_is_reported(self, tmp_path, monkeypatch):
+        from beetdrop import apple
+
+        def boom(*a, **k):
+            raise apple.AppleError("no developer token")
+
+        with self._client(tmp_path, monkeypatch, boom=boom) as client:
+            assert client.get("/api/lyrics/preview?song_id=1").status_code == 502
+            assert client.get("/api/lyrics/download?song_id=1").status_code == 502
+
+    def test_the_page_offers_the_lyrics_mode(self):
+        from pathlib import Path as _Path
+        page = (_Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        source = (_Path(__file__).parent.parent / "beetdrop" / "static"
+                  / "app.js").read_text()
+        assert "setSearchType('lyrics')" in page
+        assert "lyricsDownloadUrl(r)" in page and "previewLyrics(r)" in page
+        assert "/api/lyrics/download?song_id=" in source
+        # Word-by-word is the point of this app, so it starts on.
+        assert "lyricsWordByWord: true" in source

@@ -109,6 +109,14 @@ video library is a `Music Videos` subfolder of `/music`, so no extra mount
 is needed; set `VIDEO_PATH` (or the Settings field) to put it on its own
 disk. Max quality is set with `BEETDROP_VIDEO_MAX_HEIGHT` or in Settings.
 
+## Lyrics on their own
+
+A fourth search mode, Lyrics, searches Apple Music and saves the .lrc
+straight to the device - word-by-word by default. Nothing is matched
+against the library and nothing is written to it: it is just the lyrics
+file. Preview it first if you want to see what you are getting; a track
+Apple has only line timing for still downloads, and the page says so.
+
 ## Web UI and API
 
 `python -m beetdrop serve` (port 8090) serves a single-page PWA:

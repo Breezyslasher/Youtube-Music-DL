@@ -30,6 +30,7 @@ createApp({
       unmatched: [],
       unmatchedTotal: 0,
       loadingUnmatched: false,
+      lyricsWordByWord: true,
       testingApple: false,
       appleStatus: "",
       appleOk: false,
@@ -132,6 +133,17 @@ createApp({
       if (!q || this.searching) return;
       this.searching = true;
       try {
+        if (this.searchType === "lyrics") {
+          // A different catalogue entirely: Apple, not YouTube Music, and
+          // nothing here is downloaded into the library.
+          const found = await this.api(
+            "/api/lyrics/search?q=" + encodeURIComponent(q) + "&limit=15");
+          this.results = (found.results || []).map((song) =>
+            Object.assign({}, song, { lrc: "", loading: false, gotWords: false }));
+          this.resultsType = "lyrics";
+          this.searched = true;
+          return;
+        }
         const body = await this.api(
           "/api/search?q=" + encodeURIComponent(q) + "&type=" + this.searchType
         );
@@ -142,6 +154,36 @@ createApp({
         if (err.message !== "password required") this.showToast("Search failed: " + err.message);
       } finally {
         this.searching = false;
+      }
+    },
+
+    lyricsFileName(song) {
+      const name = [song.artist, song.title].filter(Boolean).join(" - ");
+      return (name || "lyrics").replace(/[\\/:*?"<>|]+/g, "_") + ".lrc";
+    },
+
+    lyricsDownloadUrl(song) {
+      // A plain link, served with Content-Disposition: a download started
+      // by script is what mobile browsers are least reliable about, and
+      // the session cookie rides along on its own.
+      return "/api/lyrics/download?song_id=" + encodeURIComponent(song.id)
+        + "&word=" + (this.lyricsWordByWord ? "true" : "false")
+        + "&name=" + encodeURIComponent(this.lyricsFileName(song));
+    },
+
+    async previewLyrics(song) {
+      if (song.lrc) { song.lrc = ""; return; }
+      song.loading = true;
+      try {
+        const body = await this.api(
+          "/api/lyrics/preview?song_id=" + encodeURIComponent(song.id)
+          + "&word=" + (this.lyricsWordByWord ? "true" : "false"));
+        song.lrc = body.lrc || "";
+        song.gotWords = !!body.word_level;
+      } catch (err) {
+        if (err.message !== "password required") this.showToast(err.message);
+      } finally {
+        song.loading = false;
       }
     },
 
