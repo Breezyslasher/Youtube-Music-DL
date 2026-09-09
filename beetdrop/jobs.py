@@ -173,13 +173,21 @@ class JobManager:
                 # placeholder sidecars before re-fetching.
                 purge = job["video_id"] == "__refresh__"
                 upgrade = job["video_id"] == "__upgrade__"
+                redo = job["video_id"] == "__rewords__"
                 self._update(job_id, stage="scanning", title=(
+                    "Library word-by-word re-render" if redo else
                     "Library lyrics upgrade" if upgrade else
                     "Library lyrics refresh" if purge else "Library lyrics scan"))
                 result = backfill_lyrics(config, on_progress=on_progress,
                                          on_detail=on_detail, purge_bad=purge,
-                                         upgrade=upgrade)
-                if upgrade:
+                                         upgrade=upgrade, redo_words=redo,
+                                         store=self._store)
+                if redo:
+                    detail = "re-rendered %d of %d word-by-word tracks" % (
+                        result.upgraded, result.total)
+                    if result.no_match:
+                        detail += " (%d left as they were)" % result.no_match
+                elif upgrade:
                     detail = "upgraded %d of %d line-level tracks to word-by-word" % (
                         result.upgraded, result.total)
                     if result.no_match:

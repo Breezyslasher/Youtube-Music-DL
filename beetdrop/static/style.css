@@ -377,3 +377,13 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   margin-top: 3px;
   flex: none;
 }
+
+/* Refused-match review: each candidate is a full-width tap target, with
+   the reason it was turned down under it. */
+.review { border-top: 1px solid var(--line); padding: 0.6rem 0 0.2rem; }
+.review-track { margin: 0 0 0.4rem; }
+.candidate {
+  display: block; width: 100%; text-align: left; margin-bottom: 0.35rem;
+  padding: 0.5rem 0.6rem; min-height: 44px;
+}
+.candidate .note { display: block; margin-top: 0.15rem; }

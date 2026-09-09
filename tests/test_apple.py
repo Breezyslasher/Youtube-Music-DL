@@ -1,6 +1,8 @@
 """Apple Music lyrics: TTML conversion, search/fetch, the provider chain,
 and the settings round-trip. All HTTP is faked."""
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -417,6 +419,72 @@ BG_TTML = (
     '<span begin="162.50" end="163.00">(Out</span> '
     '<span begin="163.00" end="164.00">he-e-ere)</span>'
     '</span></p></div></body></tt>')
+
+
+SYLLABLE_TTML = (
+    '<tt xmlns="http://www.w3.org/ns/ttml" '
+    'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+    'xmlns:ttm="http://www.w3.org/ns/ttml#metadata" itunes:timing="Word">'
+    '<body><div><p begin="9.93" end="12.20">'
+    '<span begin="9.93" end="10.18">Tum</span>'
+    '<span begin="10.18" end="10.32">ble</span> '
+    '<span begin="10.32" end="10.50">out</span> '
+    '<span begin="10.50" end="10.64">of</span> '
+    '<span begin="10.64" end="10.92">bed,</span> '
+    '<span begin="10.92" end="11.09">and</span> '
+    '<span begin="11.09" end="11.25">I</span> '
+    '<span begin="11.25" end="11.39">stum</span>'
+    '<span begin="11.39" end="11.54">ble</span>'
+    '</p></div></body></tt>')
+
+
+class TestSyllables:
+    """The endpoint is /syllable-lyrics: a word arrives as one span per
+    syllable, and only the whitespace between them says where the word
+    ends. Joining every span with a space wrote "Tum ble out of bed"."""
+
+    def test_syllables_of_one_word_are_not_split_apart(self):
+        lrc = apple.ttml_to_lrc(SYLLABLE_TTML, word_by_word=True)
+        assert lrc == (
+            "[00:09.93]<00:09.93>Tum<00:10.18>ble <00:10.32>out "
+            "<00:10.50>of <00:10.64>bed, <00:10.92>and <00:11.09>I "
+            "<00:11.25>stum<00:11.39>ble")
+
+    def test_every_syllable_keeps_its_own_timestamp(self):
+        lrc = apple.ttml_to_lrc(SYLLABLE_TTML, word_by_word=True)
+        assert lrc.count("<00:") == 9
+
+    def test_the_plain_text_reads_as_words(self):
+        lrc = apple.ttml_to_lrc(SYLLABLE_TTML, word_by_word=True)
+        assert "Tumble out of bed, and I stumble" in re.sub(
+            r"[\[<][\d:.]+[\]>]", "", lrc)
+
+    def test_a_space_carried_on_the_text_itself_still_separates(self):
+        ttml = (
+            '<tt xmlns="http://www.w3.org/ns/ttml" '
+            'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+            'itunes:timing="Word"><body><div><p begin="1.0">'
+            '<span begin="1.0">one</span><span begin="2.0"> two</span>'
+            '</p></div></body></tt>')
+        assert apple.ttml_to_lrc(ttml, word_by_word=True) == (
+            "[00:01.00]<00:01.00>one <00:02.00>two")
+
+    def test_a_body_with_no_whitespace_at_all_falls_back_to_spacing(self):
+        # Some other shape of TTML could carry no whitespace anywhere.
+        # Running the whole line together would be far worse than the old
+        # behaviour, so that case keeps the old behaviour.
+        ttml = (
+            '<tt xmlns="http://www.w3.org/ns/ttml" '
+            'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+            'itunes:timing="Word"><body><div><p begin="1.0">'
+            '<span begin="1.0">one</span><span begin="2.0">two</span>'
+            '</p></div></body></tt>')
+        assert apple.ttml_to_lrc(ttml, word_by_word=True) == (
+            "[00:01.00]<00:01.00>one <00:02.00>two")
+
+    def test_line_level_rendering_is_untouched(self):
+        assert apple.ttml_to_lrc(SYLLABLE_TTML) == (
+            "[00:09.93]Tumble out of bed, and I stumble")
 
 
 class TestBackgroundVocals:
@@ -872,3 +940,349 @@ class TestChainSkipsAppleButKeepsGoing:
         apple.hold_off(60.0)
         with pytest.raises(lyrics_module.LyricsUnavailable):
             lyrics_module.fetch_synced_lyrics("A", "S", apple_token="t")
+
+
+class TestWhoNeedsTheAccount:
+    """A plain catalog search needs no account - proven live, where the
+    same search returned 200 anonymously. A search that also asks for
+    lyrics does need one, because lyrics are subscriber-gated. So the
+    lookup used by the estimator stays anonymous, while the combined
+    one-request fetch carries the token."""
+
+    SONG = {"id": "1369380479",
+            "attributes": {"durationInMillis": 200187, "name": "lovely"}}
+
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def test_a_plain_lookup_sends_no_account_token(self, monkeypatch):
+        seen = {}
+
+        def fake_get(url, headers=None, params=None, **kw):
+            seen.update(headers or {})
+            return FakeResp({"results": {"songs": {"data": [self.SONG]}}})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+
+        apple.search_song("dev", "mut-should-not-be-sent", "us", "A", "S", 200)
+        assert seen.get("Authorization") == "Bearer dev"
+        assert not seen.get("Media-User-Token")
+
+    def test_the_combined_fetch_does_send_it(self, monkeypatch):
+        """Lyrics are subscriber-gated, so the search that carries them
+        has to be signed in - one signed-in request rather than an
+        anonymous one plus a signed-in one."""
+        sent = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            sent.append((headers or {}).get("Media-User-Token"))
+            return FakeResp({"results": {"songs": {"data": [dict(
+                self.SONG, relationships={"syllable-lyrics": {"data": [
+                    {"attributes": {"ttml": WORD_TTML}}]}})]}}})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+
+        assert apple.fetch_synced("mut", "Billie Eilish", "lovely", 200)
+        assert sent == ["mut"]        # exactly one request, signed in
+
+
+class TestNoShortcutOnTheLyricsFlag:
+    """hasTimeSyncedLyrics looked like a free way to skip the second
+    request. Measured against a real library it was wrong 9 times in 17 -
+    Apple flags a track as having no synced lyrics on an anonymous search
+    and then serves them when asked - so the lyrics are always fetched.
+    A saved request is not worth silently dropping lyrics."""
+
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def _run(self, monkeypatch, attributes):
+        calls = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            calls.append(url)
+            if "/search" in url:
+                return FakeResp({"results": {"songs": {"data": [
+                    {"id": "1", "attributes": attributes}]}}})
+            return FakeResp({"data": [{"attributes": {"ttml": WORD_TTML}}]})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        return apple.fetch_synced("mut", "A", "S", 200), calls
+
+    def test_lyrics_fetched_even_when_apple_says_there_are_none(self, monkeypatch):
+        result, calls = self._run(monkeypatch, {
+            "durationInMillis": 200000, "hasLyrics": True,
+            "hasTimeSyncedLyrics": False})
+        assert result, "the flag is unreliable; the fetch must still happen"
+        assert any("syllable-lyrics" in url for url in calls)
+
+    def test_has_lyrics_false_is_not_trusted_either(self, monkeypatch):
+        result, calls = self._run(monkeypatch, {
+            "durationInMillis": 200000, "hasLyrics": False})
+        assert result
+        assert any("syllable-lyrics" in url for url in calls)
+
+    def test_a_positive_flag_still_fetches(self, monkeypatch):
+        result, calls = self._run(monkeypatch, {
+            "durationInMillis": 200000, "hasTimeSyncedLyrics": True})
+        assert result and any("syllable-lyrics" in url for url in calls)
+
+
+class TestTokenIsValidatedNotGuessed:
+    """The web player ships several JWTs for different Apple services and
+    only one is accepted by the catalog API. Taking the first match found
+    the AMPWebPlay token, which the catalog API refuses with 429 "Request
+    is forbidden" - indistinguishable from a rate limit, and hours were
+    spent waiting out a quota that never existed."""
+
+    PAGE = ('<html><script src="/assets/index~abc.js"></script>'
+            'eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.'
+            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBB'
+            '</html>')
+    BAD = ("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9."
+           "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBB")
+    GOOD = ("eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1Nik9."
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC.DDDDDDDDDDDDDDDDDDDDDDDD")
+
+    def setup_method(self):
+        apple._dev_token["value"] = ""
+        apple._dev_token["at"] = 0.0
+        apple._throttle_until = 0.0
+
+    def _serve(self, monkeypatch, accepted):
+        """The page offers BAD then GOOD; only `accepted` searches 200."""
+        asset = "junk " + self.GOOD
+
+        def fake_get(url, headers=None, params=None, **kw):
+            if "music.apple.com/us/browse" in url:
+                return FakeResp(text=self.PAGE, ok=True, status=200)
+            if url.endswith(".js"):
+                return FakeResp(text=asset, ok=True, status=200)
+            token = (headers or {}).get("Authorization", "")
+            if token == "Bearer " + accepted:
+                return FakeResp({"results": {}}, ok=True, status=200)
+            return FakeResp(ok=False, status=429,
+                            text='{"errors":[{"title":"Too Many Requests"}]}')
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+
+    def test_the_refused_first_token_is_passed_over(self, monkeypatch):
+        self._serve(monkeypatch, accepted=self.GOOD)
+        assert apple.fetch_developer_token() == self.GOOD
+
+    def test_a_working_first_token_is_still_used(self, monkeypatch):
+        self._serve(monkeypatch, accepted=self.BAD)
+        assert apple.fetch_developer_token() == self.BAD
+
+    def test_the_accepted_token_is_cached(self, monkeypatch):
+        self._serve(monkeypatch, accepted=self.GOOD)
+        apple.fetch_developer_token()
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: pytest.fail("re-scraped"))
+        assert apple.fetch_developer_token() == self.GOOD
+
+    def test_every_token_refused_says_so_plainly(self, monkeypatch):
+        self._serve(monkeypatch, accepted="nothing-matches-this")
+        with pytest.raises(apple.AppleError) as caught:
+            apple.fetch_developer_token()
+        # Not reported as a rate limit, which is what sent us wrong.
+        assert "refused every one" in str(caught.value)
+
+
+class TestOneRequestPerTrack:
+    """Apple attaches lyrics to a search result, so the two calls a track
+    used to cost - search for an id, then fetch by that id - become one.
+    Confirmed against the live API: include[songs]=syllable-lyrics carried
+    the lyrics, while plain include= returned 200 and carried nothing."""
+
+    SONG = {"id": "1", "attributes": {"durationInMillis": 200000},
+            "relationships": {"syllable-lyrics": {"data": [
+                {"attributes": {"ttml": WORD_TTML}}]}}}
+
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def _run(self, monkeypatch, song):
+        calls = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            calls.append((url, dict(params or {})))
+            if "/search" in url:
+                return FakeResp({"results": {"songs": {"data": [song]}}})
+            return FakeResp({"data": [{"attributes": {"ttml": LINE_TTML}}]})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        return apple.fetch_synced("mut", "A", "S", 200,
+                                  word_by_word=True), calls
+
+    def test_a_hit_costs_one_request(self, monkeypatch):
+        lrc, calls = self._run(monkeypatch, self.SONG)
+        assert lrc.startswith("[00:20.78]<00:20.78>Thought")
+        assert len(calls) == 1
+        assert not any("syllable-lyrics" in url for url, _ in calls)
+
+    def test_the_bracketed_include_is_what_is_sent(self, monkeypatch):
+        _, calls = self._run(monkeypatch, self.SONG)
+        params = calls[0][1]
+        assert params.get("include[songs]") == "syllable-lyrics"
+        # Plain include= is silently ignored by Apple, so it must not be
+        # what we rely on.
+        assert "include" not in params
+
+    def test_lyrics_not_carried_falls_back_rather_than_missing(self, monkeypatch):
+        """A search that does not attach them has not said the track has
+        none; recording a miss there would lose real lyrics."""
+        bare = {"id": "1", "attributes": {"durationInMillis": 200000}}
+        lrc, calls = self._run(monkeypatch, bare)
+        assert lrc == "[01:03.10]This nearly was mine"   # from the fallback
+        assert any("syllable-lyrics" in url for url, _ in calls)
+
+    def test_the_duration_check_still_applies(self, monkeypatch):
+        """Refusing every candidate is reported, not silently a miss: the
+        track may be in the catalogue under a length we would not accept,
+        and only a person can say."""
+        wrong = {"id": "1", "attributes": {"durationInMillis": 400000,
+                                           "name": "S", "artistName": "A"},
+                 "relationships": self.SONG["relationships"]}
+        with pytest.raises(apple.NeedsChoice) as refused:
+            self._run(monkeypatch, wrong)
+        assert refused.value.candidates
+        assert "longer or shorter" in refused.value.candidates[0]["reason"]
+
+
+class TestWrongSongIsRejected:
+    """A catalog search is a loose text match, so duration alone is not
+    enough. From a real library: "Electric Light Orchestra - Starlight"
+    came back as "Electric Light Orchestra Part II - Thousand Eyes" - a
+    different song by a different band of about the same length. Wrong
+    lyrics are worse than none."""
+
+    def _song(self, name, artist, millis=200000):
+        return {"id": "1", "attributes": {"name": name, "artistName": artist,
+                                          "durationInMillis": millis}}
+
+    @pytest.mark.parametrize("their_artist,their_title,accept", [
+        ("Electric Light Orchestra Part II", "Thousand Eyes", False),
+        ("Electric Light Orchestra", "Starlight", True),
+        ("Beyonce", "Starlight", False),
+    ])
+    def test_relevance(self, their_artist, their_title, accept):
+        song = self._song(their_title, their_artist)
+        assert apple.looks_like_the_track(
+            song, "Electric Light Orchestra", "Starlight") is accept
+
+    @pytest.mark.parametrize("mine,theirs", [
+        ("Idina Menzel featuring AURORA", "Idina Menzel"),
+        ("Billie Eilish", "Billie Eilish & Khalid"),
+        ("The Outfield", "The Outfield"),
+    ])
+    def test_a_featured_credit_is_still_the_same_artist(self, mine, theirs):
+        song = self._song("Into the Unknown", theirs)
+        assert apple.looks_like_the_track(song, mine, "Into the Unknown")
+
+    def test_a_plain_title_matches_a_plain_title(self):
+        assert apple.looks_like_the_track(
+            self._song("Hello", "Adele"), "Adele", "Hello")
+
+    @pytest.mark.parametrize("theirs", [
+        "Hello (Live)", "Hello (Acoustic)", "Hello (Extended Remix)"])
+    def test_a_different_performance_is_rejected(self, theirs):
+        """Its lyrics are timed to that performance, so they drift against
+        the studio cut. From the library: "Don't Lose My Number" matched
+        "Don't Lose My Number (Live from the Serious Tour 1990)"."""
+        assert not apple.looks_like_the_track(
+            self._song(theirs, "Adele"), "Adele", "Hello")
+
+    def test_a_live_track_still_matches_the_live_cut(self):
+        assert apple.looks_like_the_track(
+            self._song("Hello (Live)", "Adele"), "Adele", "Hello (Live)")
+
+    def test_missing_names_are_not_treated_as_a_mismatch(self):
+        # Absence is not disagreement - the same mistake the has-lyrics
+        # flag taught, and it must not be repeated here.
+        assert apple.looks_like_the_track({"id": "1", "attributes": {}},
+                                          "Adele", "Hello")
+
+    def test_a_wrong_song_is_not_chosen_even_on_a_perfect_duration(self):
+        songs = [self._song("Thousand Eyes", "Electric Light Orchestra Part II",
+                            200000)]
+        assert apple._best_by_duration(
+            songs, 200, "Electric Light Orchestra", "Starlight") is None
+
+
+class TestQueryIsRetriedSimplified:
+    """From a real library: 348 of 598 refusals were "a different song or
+    artist", meaning Apple answered with something unrelated - our query's
+    fault, not Apple's. Titles like "Where Are You Now (Offiicial Audio)"
+    and "MONSTER MASH - (Pop Punk Halloween cover by ...)" went into the
+    search term verbatim. LRCLIB has retried with a simplified query for
+    ages; this asked once."""
+
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def _serve(self, monkeypatch, answers):
+        """answers: {search term -> song row or None}."""
+        terms = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            term = (params or {}).get("term", "")
+            terms.append(term)
+            song = answers.get(term)
+            return FakeResp({"results": {"songs": {"data": [song] if song else []}}})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        return terms
+
+    def _song(self, name, artist, ms=200000):
+        return {"id": "1",
+                "attributes": {"name": name, "artistName": artist,
+                               "durationInMillis": ms},
+                "relationships": {"syllable-lyrics": {"data": [
+                    {"attributes": {"ttml": WORD_TTML}}]}}}
+
+    def test_a_junk_parenthetical_is_dropped_on_the_retry(self, monkeypatch):
+        terms = self._serve(monkeypatch, {
+            "Justin Bieber Where Are You Now (Offiicial Audio)": None,
+            "Justin Bieber Where Are You Now":
+                self._song("Where Are You Now", "Justin Bieber")})
+        lrc = apple.fetch_synced("mut", "Justin Bieber",
+                                 "Where Are You Now (Offiicial Audio)", 200)
+        assert lrc
+        assert len(terms) == 2      # the raw term first, then the simplified
+
+    def test_a_featured_credit_is_dropped_on_the_retry(self, monkeypatch):
+        self._serve(monkeypatch, {
+            "Idina Menzel featuring AURORA Into the Unknown": None,
+            "Idina Menzel Into the Unknown":
+                self._song("Into the Unknown", "Idina Menzel")})
+        assert apple.fetch_synced("mut", "Idina Menzel featuring AURORA",
+                                  "Into the Unknown", 200)
+
+    def test_one_request_when_the_first_try_works(self, monkeypatch):
+        terms = self._serve(monkeypatch, {
+            "Green Day Geek Stink Breath":
+                self._song("Geek Stink Breath", "Green Day")})
+        assert apple.fetch_synced("mut", "Green Day", "Geek Stink Breath", 200)
+        assert len(terms) == 1      # no needless second search
+
+    def test_nothing_to_simplify_means_no_second_request(self, monkeypatch):
+        terms = self._serve(monkeypatch, {"A S": None})
+        # Nothing offered, so nothing to choose between and nothing to
+        # simplify: one request, a plain miss, no review queued.
+        assert apple.fetch_synced("mut", "A", "S", 200) is None
+        assert len(terms) == 1
+
+    def test_the_retry_reports_what_it_refused(self, monkeypatch):
+        """The candidates a person sees come from the last attempt, so
+        they match the query that actually ran."""
+        wrong = self._song("Something Else", "Another Band")
+        self._serve(monkeypatch, {
+            "Jonathan Young MONSTER MASH (Pop Punk cover)": wrong,
+            "Jonathan Young MONSTER MASH": wrong})
+        with pytest.raises(apple.NeedsChoice) as refused:
+            apple.fetch_synced("mut", "Jonathan Young",
+                               "MONSTER MASH (Pop Punk cover)", 200)
+        assert refused.value.candidates[0]["title"] == "Something Else"

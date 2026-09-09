@@ -13,6 +13,7 @@ from beetdrop.backfill import (
     backfill_lyrics,
     iter_audio_line_level_lyrics,
     iter_audio_missing_lyrics,
+    iter_audio_word_level_lyrics,
     meta_from_path,
     read_track_meta,
 )
@@ -484,6 +485,95 @@ class TestLyricsStats:
         assert body["word_pct"] == 100.0
 
 
+class TestRedoWordsPass:
+    """Apple times syllables, and we used to put a space between every
+    one, so "Tumble" was written "Tum ble". A finished .lrc no longer
+    says where the word breaks were, so no test of the file can find the
+    spoiled ones - the repair pass has to revisit them all."""
+
+    def _config(self, tmp_path):
+        music = tmp_path / "music"
+        music.mkdir()
+        return Config(music_root=music, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def _track(self, config, name, lrc=None):
+        path = config.music_root / "A" / ("%s.opus" % name)
+        make_opus(path)
+        write_full_tags(path, FullTags(title=name, artist="A"))
+        if lrc is not None:
+            path.with_suffix(".lrc").write_text(lrc)
+        return path
+
+    def test_finds_every_word_level_sidecar(self, tmp_path):
+        config = self._config(tmp_path)
+        word = self._track(config, "word", WORD_LRC)
+        self._track(config, "line", LINE_LRC)
+        self._track(config, "none", None)
+        assert list(iter_audio_word_level_lyrics(config.music_root)) == [word]
+
+    def test_a_sound_word_level_file_is_still_revisited(self, tmp_path,
+                                                        monkeypatch):
+        # The upgrade pass deliberately skips these; the repair pass must
+        # not, because "sound" is exactly what it cannot tell.
+        config = self._config(tmp_path)
+        self._track(config, "word", WORD_LRC)
+        assert list(iter_audio_line_level_lyrics(config.music_root)) == []
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: WORD_LRC)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, redo_words=True)
+        assert result.total == 1 and result.upgraded == 1
+
+    def test_rewrites_the_sidecar_with_what_apple_returns_now(self, tmp_path,
+                                                              monkeypatch):
+        config = self._config(tmp_path)
+        split = "[00:01.00]<00:01.00>Tum <00:01.50>ble <00:02.00>out"
+        joined = "[00:01.00]<00:01.00>Tum<00:01.50>ble <00:02.00>out"
+        track = self._track(config, "word", split)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: joined)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, redo_words=True)
+        assert result.upgraded == 1
+        assert track.with_suffix(".lrc").read_text() == joined
+
+    def test_a_line_level_answer_never_overwrites_word_timing(self, tmp_path,
+                                                              monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "word", WORD_LRC)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: LINE_LRC)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, redo_words=True)
+        assert result.upgraded == 0 and result.no_match == 1
+        assert track.with_suffix(".lrc").read_text() == WORD_LRC
+
+    def test_nothing_found_leaves_the_file_alone(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "word", WORD_LRC)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        backfill_lyrics(config, redo_words=True)
+        assert track.with_suffix(".lrc").read_text() == WORD_LRC
+
+    def test_it_asks_apple_alone_for_word_timing(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        config.word_lyrics = False
+        self._track(config, "word", WORD_LRC)
+        seen = {}
+
+        def fake(*args, **kwargs):
+            seen.update(kwargs)
+            return WORD_LRC
+
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        backfill_lyrics(config, redo_words=True)
+        assert seen["word_by_word"] is True and seen["word_only"] is True
+
+
 class TestUpgradeRepairsBackwardsTiming:
     def test_a_backwards_word_file_is_offered_to_the_upgrade(self, tmp_path):
         root = tmp_path / "music"
@@ -835,8 +925,10 @@ class TestScanButtonsPickTheRightPass:
         ("", "__library__"),
         ("?refresh=true", "__refresh__"),
         ("?upgrade=true", "__upgrade__"),
+        ("?redo_words=true", "__rewords__"),
         # Upgrade wins, matching the server's own precedence.
         ("?refresh=true&upgrade=true", "__upgrade__"),
+        ("?upgrade=true&redo_words=true", "__rewords__"),
     ])
     def test_marker_matches_the_requested_pass(self, tmp_path, query, marker):
         config = self._config(tmp_path)
@@ -852,3 +944,391 @@ class TestScanButtonsPickTheRightPass:
         scan = scan[:scan.index("async appleSignIn(")]
         assert "upgrade=true" in scan, "the Upgrade button posts a plain scan"
         assert "refresh=true" in scan
+        assert "redo_words=true" in scan
+
+    def test_the_page_offers_the_re_render_button(self):
+        page = (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        assert "scanLyrics(false, false, true)" in page
+
+
+class TestWordCoverageEstimate:
+    """Answering "is an upgrade pass worth running?" by running it costs
+    two Apple calls per track and hours of waiting. A random sample
+    answers it in minutes - so long as it separates "Apple has no word
+    timing" from "nothing we searched for matched", which are different
+    problems with different fixes."""
+
+    def _library(self, tmp_path, count):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        for i in range(count):
+            track = config.music_root / "A" / ("t%03d.opus" % i)
+            track.write_bytes(b"x")
+            track.with_suffix(".lrc").write_text("[00:01.00]plain")
+        return config
+
+    def _apple(self, monkeypatch, rows, word=True):
+        """rows(path_index) -> a catalog row, or None for no match."""
+        from beetdrop import apple
+        asked = []
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda force=False: "d")
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", p.stem, "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def search(dev, sf, artist, title, duration=None):
+            asked.append(title)
+            return rows(len(asked) - 1)
+        monkeypatch.setattr(apple, "search_song_row", search)
+        monkeypatch.setattr(apple, "fetch_ttml",
+                            lambda *a, **k: "<tt/>")
+        monkeypatch.setattr(apple, "is_word_level", lambda ttml: word)
+        return asked
+
+    def test_samples_rather_than_checking_everything(self, tmp_path, monkeypatch):
+        config = self._library(tmp_path, 200)
+        asked = self._apple(monkeypatch, lambda i: {"id": "1", "attributes": {}})
+        est = backfill.estimate_word_coverage(config, sample=20, seed=1)
+        assert len(asked) == 20            # not all 200
+        assert est.population == 200
+        assert est.matched == 20 and est.pct == 100.0
+        assert est.projected == 200        # scaled back up to the population
+
+    def test_a_failed_match_is_not_blamed_on_apple(self, tmp_path, monkeypatch):
+        """The bug this closes: a track Apple never found was counted the
+        same as one Apple has no word timing for, so rough tags read as
+        "Apple does not have it"."""
+        config = self._library(tmp_path, 100)
+        self._apple(monkeypatch,
+                    lambda i: None if i % 2 else {"id": "1", "attributes": {}})
+        est = backfill.estimate_word_coverage(config, sample=20, seed=2)
+        assert est.not_found == 10
+        assert est.matched == 10
+        assert est.pct == 100.0        # of what Apple actually recognised
+        assert est.pct_of_all == 50.0  # of everything asked about
+        assert est.match_pct == 50.0
+        assert est.not_found_files       # named, so they can be eyeballed
+
+    def test_matched_but_no_word_timing_is_apples_answer(self, tmp_path, monkeypatch):
+        config = self._library(tmp_path, 100)
+        self._apple(monkeypatch, lambda i: {"id": "1", "attributes": {}},
+                    word=False)
+        est = backfill.estimate_word_coverage(config, sample=10, seed=3)
+        assert est.matched == 10 and est.no_word == 10
+        assert est.not_found == 0 and est.pct == 0.0
+
+    def test_a_no_lyrics_flag_saves_the_second_call(self, tmp_path, monkeypatch):
+        from beetdrop import apple
+        config = self._library(tmp_path, 20)
+        self._apple(monkeypatch, lambda i: {
+            "id": "1", "attributes": {"hasTimeSyncedLyrics": False}})
+        fetched = []
+        monkeypatch.setattr(apple, "fetch_ttml",
+                            lambda *a, **k: fetched.append(1))
+        est = backfill.estimate_word_coverage(config, sample=10, seed=4)
+        assert est.matched == 10 and est.no_word == 10
+        assert not fetched          # Apple already said there are none
+
+    def test_rate_limited_tracks_are_excluded_not_counted_as_no(
+            self, tmp_path, monkeypatch):
+        """Counting a deferred track as "Apple has nothing" would drag the
+        estimate down precisely when Apple is refusing to answer."""
+        from beetdrop import apple
+        config = self._library(tmp_path, 50)
+        calls = {"n": 0}
+
+        def search(dev, sf, artist, title, duration=None):
+            calls["n"] += 1
+            if calls["n"] % 2:
+                raise apple.AppleUnavailable("429")
+            return {"id": "1", "attributes": {}}
+        self._apple(monkeypatch, lambda i: None)
+        monkeypatch.setattr(apple, "search_song_row", search)
+        est = backfill.estimate_word_coverage(config, sample=20, seed=3)
+        assert est.deferred == 10
+        assert est.matched == 10
+        assert est.pct == 100.0        # of what was actually answered
+
+    def test_an_empty_library_is_not_an_error(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        config.music_root.mkdir(parents=True)
+        est = backfill.estimate_word_coverage(config)
+        assert est.population == 0 and est.pct == 0.0
+
+    def test_nothing_is_written(self, tmp_path, monkeypatch):
+        config = self._library(tmp_path, 10)
+        self._apple(monkeypatch, lambda i: {"id": "1", "attributes": {}})
+        backfill.estimate_word_coverage(config, sample=10, seed=1)
+        for lrc in (config.music_root / "A").glob("*.lrc"):
+            assert lrc.read_text() == "[00:01.00]plain"   # untouched
+
+
+class TestIsrcReading:
+    """An ISRC names one exact recording, so a lookup by it cannot return
+    the wrong version the way a text search can. Every format spells the
+    tag differently and MP4 has no standard atom at all, so the reader
+    has to know all of them or it reports a library as having none."""
+
+    def _flac(self, tmp_path, isrc):
+        pytest.importorskip("mutagen.flac")
+        import subprocess
+        path = tmp_path / "t.flac"
+        subprocess.run(["ffmpeg", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=1", str(path),
+                        "-y", "-loglevel", "error"], check=True, timeout=60)
+        from mutagen.flac import FLAC
+        audio = FLAC(str(path))
+        audio["ISRC"] = isrc
+        audio.save()
+        return path
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_reads_a_vorbis_isrc(self, tmp_path):
+        path = self._flac(tmp_path, "GBAYE0601498")
+        assert backfill.read_isrc(path) == "GBAYE0601498"
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_dashes_and_case_are_normalised(self, tmp_path):
+        # Taggers write "gb-aye-06-01498"; Apple wants the bare form.
+        path = self._flac(tmp_path, "gb-aye-06-01498")
+        assert backfill.read_isrc(path) == "GBAYE0601498"
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_no_isrc_is_empty_not_an_error(self, tmp_path):
+        import subprocess
+        path = tmp_path / "bare.flac"
+        subprocess.run(["ffmpeg", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=1", str(path),
+                        "-y", "-loglevel", "error"], check=True, timeout=60)
+        assert backfill.read_isrc(path) == ""
+
+    def test_an_unreadable_file_is_empty_not_an_error(self, tmp_path):
+        path = tmp_path / "junk.mp3"
+        path.write_bytes(b"not audio")
+        assert backfill.read_isrc(path) == ""
+
+    @pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+    def test_coverage_counts_across_the_library(self, tmp_path):
+        root = tmp_path / "m"
+        root.mkdir()
+        tagged = self._flac(tmp_path, "GBAYE0601498")
+        import shutil
+        shutil.copy(tagged, root / "one.flac")
+        shutil.copy(tagged, root / "two.flac")
+        (root / "three.opus").write_bytes(b"x")     # unreadable, no ISRC
+        with_isrc, checked = backfill.isrc_coverage(root)
+        assert (with_isrc, checked) == (2, 3)
+
+
+class TestVerifySkipFlag:
+    """fetch_synced skips the lyrics request when Apple's search says a
+    track has no synced lyrics. That rests on the flag being accurate on
+    an anonymous search - assumed from one working example, never
+    established. This check makes the skipped request anyway."""
+
+    def _library(self, tmp_path, count=20):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        for i in range(count):
+            track = config.music_root / "A" / ("t%02d.opus" % i)
+            track.write_bytes(b"x")
+            track.with_suffix(".lrc").write_text("[00:01.00]plain")
+        return config
+
+    def _stub(self, monkeypatch, flagged_false, ttml):
+        from beetdrop import apple
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda force=False: "d")
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", p.stem, "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr(apple, "search_song_row", lambda *a, **k: {
+            "id": "1",
+            "attributes": {"hasTimeSyncedLyrics": not flagged_false}})
+        monkeypatch.setattr(apple, "fetch_ttml", lambda *a, **k: ttml)
+        monkeypatch.setattr(apple, "is_word_level", lambda t: "Word" in (t or ""))
+
+    def test_a_lying_flag_is_caught(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=True, ttml="<tt Word/>")
+        check = backfill.verify_skip_flag(config, sample=5)
+        assert check.flagged_false == 5
+        assert check.had_lyrics == 5 and check.had_word == 5
+        assert check.flag_is_wrong
+        assert check.wrong_examples
+
+    def test_an_honest_flag_clears_the_skip(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=True, ttml=None)
+        check = backfill.verify_skip_flag(config, sample=5)
+        assert check.flagged_false == 5
+        assert check.had_lyrics == 0
+        assert not check.flag_is_wrong
+
+    def test_tracks_apple_never_flags_are_not_counted(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=False, ttml="<tt Word/>")
+        check = backfill.verify_skip_flag(config, sample=5, max_searches=10)
+        # Nothing was flagged, so the check has nothing to say either way.
+        assert check.flagged_false == 0 and check.had_lyrics == 0
+        assert not check.flag_is_wrong
+
+    def test_the_search_budget_is_bounded(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path, count=50)
+        self._stub(monkeypatch, flagged_false=False, ttml=None)
+        check = backfill.verify_skip_flag(config, sample=30, max_searches=7)
+        assert check.searched <= 7
+
+    def test_nothing_is_written(self, monkeypatch, tmp_path):
+        config = self._library(tmp_path)
+        self._stub(monkeypatch, flagged_false=True, ttml="<tt Word/>")
+        backfill.verify_skip_flag(config, sample=5)
+        for lrc in (config.music_root / "A").glob("*.lrc"):
+            assert lrc.read_text() == "[00:01.00]plain"
+
+
+class TestRefusedMatchesAreQueuedForReview:
+    """Once matching started turning candidates away, a track with no
+    lyrics could mean Apple had nothing or that we declined everything it
+    offered. Only the second is worth a person's attention, so only that
+    is queued - listing tracks with nothing to choose between would be
+    clicking through blanks."""
+
+    def _config(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        track = config.music_root / "A" / "song.opus"
+        track.write_bytes(b"x")
+        return config, track
+
+    def _run(self, tmp_path, monkeypatch, candidates=None, store=None):
+        config, track = self._config(tmp_path)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def fake(*a, **k):
+            if candidates and k.get("on_candidates"):
+                k["on_candidates"](candidates)
+            return None
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        return backfill_lyrics(config, store=store), track
+
+    def test_refused_candidates_are_queued(self, tmp_path, monkeypatch):
+        store = Store(tmp_path / "db.sqlite3")
+        refused = [{"id": "1", "title": "Song (Live)", "artist": "A",
+                    "reason": "a different performance"}]
+        result, track = self._run(tmp_path, monkeypatch, refused, store)
+        assert result.no_match == 1
+        assert store.count_reviews() == 1
+        row = store.list_reviews()[0]
+        assert row["path"] == str(track)
+        assert row["candidates"][0]["reason"] == "a different performance"
+
+    def test_a_track_apple_had_nothing_for_is_not_queued(self, tmp_path, monkeypatch):
+        store = Store(tmp_path / "db.sqlite3")
+        result, _ = self._run(tmp_path, monkeypatch, candidates=None, store=store)
+        assert result.no_match == 1
+        assert store.count_reviews() == 0     # nothing to choose between
+
+    def test_a_scan_without_a_store_still_works(self, tmp_path, monkeypatch):
+        result, _ = self._run(tmp_path, monkeypatch, [{"id": "1"}], store=None)
+        assert result.no_match == 1
+
+
+class TestAChoiceOutranksMatching:
+    """A decision is durable on purpose: a rescan must never quietly undo
+    it, and correcting a wrong automatic match has to stick."""
+
+    def _config(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        track = config.music_root / "A" / "song.opus"
+        track.write_bytes(b"x")
+        return config, track
+
+    def test_a_chosen_song_is_used_and_matching_is_skipped(self, tmp_path, monkeypatch):
+        config, track = self._config(tmp_path)
+        store = Store(tmp_path / "db.sqlite3")
+        store.set_choice(str(track), "1369380479")
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr(
+            backfill, "fetch_synced_lyrics",
+            lambda *a, **k: pytest.fail("matching ran despite a decision"))
+        asked = []
+        monkeypatch.setattr(backfill, "_lyrics_by_choice",
+                            lambda cfg, song_id, word_by_word=False:
+                            asked.append(song_id) or "[00:01.00]picked")
+
+        result = backfill_lyrics(config, store=store)
+        assert asked == ["1369380479"]
+        assert result.added == 1
+        assert track.with_suffix(".lrc").read_text() == "[00:01.00]picked"
+
+    def test_leave_alone_is_honoured(self, tmp_path, monkeypatch):
+        config, track = self._config(tmp_path)
+        store = Store(tmp_path / "db.sqlite3")
+        store.set_choice(str(track), "")      # "none of these"
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        monkeypatch.setattr(
+            backfill, "fetch_synced_lyrics",
+            lambda *a, **k: pytest.fail("looked up a track marked leave-alone"))
+
+        result = backfill_lyrics(config, store=store)
+        assert result.skipped == 1
+        assert not track.with_suffix(".lrc").exists()
+
+
+class TestPlaceholderForAnInstrumental:
+    """A source with nothing to say for an instrumental answers with a
+    marker rather than a refusal. Written out it is a sidecar carrying no
+    lyrics that still makes the track look done, so no later pass
+    revisits it. Found on a real library: "Instrumental", a lone dash, and
+    a bare timestamp, on Eruption and other instrumentals."""
+
+    from beetdrop.lyrics import carries_no_lyrics as _check
+
+    @pytest.mark.parametrize("lrc", [
+        "[00:00.00]Instrumental",
+        "[00:00.00] Instrumental",
+        "[00:00.00]",
+        "[00:00.00]-",
+        "[00:01.00]Intro\n[00:05.00]Outro",
+        "",
+    ])
+    def test_rejected(self, lrc):
+        assert backfill.carries_no_lyrics(lrc)
+
+    @pytest.mark.parametrize("lrc", [
+        "[00:01.60]Be a good boy and put this on",     # a real one-line skit
+        "[00:00.23]Are you still up?",
+        "[00:01.00]<00:01.00>real <00:01.40>words",
+        "[00:01.00]Instrumental break coming up now",  # real words, not a marker
+    ])
+    def test_kept(self, lrc):
+        assert not backfill.carries_no_lyrics(lrc)
+
+    def test_such_a_file_is_swept_up_by_refresh(self, tmp_path):
+        root = tmp_path / "m"
+        (root / "A").mkdir(parents=True)
+        (root / "A" / "eruption.lrc").write_text("[00:00.00]Instrumental")
+        (root / "A" / "real.lrc").write_text(
+            "[00:11.20]Thought I found a way\n[00:14.05]out")
+        bad = [p.name for p in backfill.find_bad_lyrics(root)]
+        assert bad == ["eruption.lrc"]
+
+    def test_it_is_never_written_in_the_first_place(self, monkeypatch):
+        from beetdrop import lyrics as ly
+        monkeypatch.setattr(ly, "_lrclib", lambda *a, **k: "[00:00.00]Instrumental")
+        monkeypatch.setattr(ly, "_musixmatch", lambda *a, **k: None)
+        monkeypatch.setattr(ly, "_apple", lambda *a, **k: None)
+        assert ly.fetch_synced_lyrics("A", "S") is None

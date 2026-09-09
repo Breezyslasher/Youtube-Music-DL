@@ -91,6 +91,33 @@ def looks_synthetic(lrc: str) -> bool:
     return gap > 0 and hits / len(gaps) >= _UNIFORM_RATIO
 
 
+# A source with nothing to say for an instrumental answers with a marker
+# rather than a refusal. Written out, it is a sidecar carrying no lyrics
+# that still makes the track look done, so no later pass revisits it.
+_NO_LYRICS = re.compile(r"^(instrumental|music|intro|outro|interlude|\W*)$", re.I)
+
+
+def carries_no_lyrics(lrc: str) -> bool:
+    """True when an LRC has timestamps but no actual words.
+
+    Real transcriptions of very short tracks exist - a one-line skit is
+    genuine - so this only rejects text that says nothing: empty lines, a
+    lone dash, or the word "Instrumental".
+    """
+    if not lrc:
+        return True
+    words = []
+    for line in lrc.splitlines():
+        if not _TIMESTAMP.match(line):
+            continue
+        text = _WORD_TAG.sub("", _TIMESTAMP.sub("", line, count=1)).strip()
+        if text:
+            words.append(text)
+    if not words:
+        return True
+    return len(words) <= 2 and all(_NO_LYRICS.match(w) for w in words)
+
+
 def has_word_timing(lrc: str) -> bool:
     """True for Enhanced (A2) LRC - inline <mm:ss.xx> tags before words."""
     return re.search(r"<\d{1,2}:\d{2}[.:]\d{1,3}>", lrc or "") is not None
@@ -247,13 +274,20 @@ def _musixmatch(artist, title, album, duration_seconds, token):
 
 
 def _apple(artist, title, duration_seconds, token, storefront, word_by_word,
-           wait=True):
+           wait=True, on_candidates=None):
     if not token:
         return None
     try:
         return apple.fetch_synced(token, artist, title, duration_seconds,
                                   storefront=storefront or "us",
                                   word_by_word=word_by_word, wait=wait)
+    except apple.NeedsChoice as refused:
+        # Apple had candidates and we turned them all away. Not a miss to
+        # record silently: hand them up so a person can look, then carry
+        # on down the chain, because another source may still have this.
+        if on_candidates:
+            on_candidates(refused.candidates)
+        return None
     except apple.AppleUnavailable as exc:
         raise LyricsUnavailable(str(exc)) from exc
     except Exception:
@@ -270,7 +304,8 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                         apple_token: str = "",
                         apple_storefront: str = "us",
                         word_by_word: bool = False,
-                        word_only: bool = False) -> Optional[str]:
+                        word_only: bool = False,
+                        on_candidates=None) -> Optional[str]:
     """The LRC text for this track, or None when no *synced* lyrics exist.
 
     Raises LyricsUnavailable when nothing was found *and* some source
@@ -314,7 +349,8 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
                     # could answer; otherwise skip it and let the others try.
                     memo[name] = _apple(artist, title, duration_seconds,
                                         apple_token, apple_storefront,
-                                        word_by_word, wait=word_only)
+                                        word_by_word, wait=word_only,
+                                        on_candidates=on_candidates)
             except LyricsUnavailable as exc:
                 # Keep asking the rest: another source may still have it,
                 # and a hit is a better outcome than a deferral.
@@ -328,8 +364,10 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
         return None
 
     def usable(lrc):
-        # Never accept generated placeholder text, whatever returned it.
-        return bool(lrc) and not looks_synthetic(lrc)
+        # Never accept generated placeholder text, whatever returned it,
+        # nor a marker standing in for an instrumental's absent lyrics.
+        return (bool(lrc) and not looks_synthetic(lrc)
+                and not carries_no_lyrics(lrc))
 
     # Apple is the only source with per-word timing, so when that is what
     # was asked for it has to be tried first - otherwise a line-level hit

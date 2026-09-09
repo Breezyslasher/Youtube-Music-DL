@@ -21,10 +21,13 @@ from __future__ import annotations
 import re
 import threading
 import time
+from difflib import SequenceMatcher
 from typing import Optional
 from xml.etree import ElementTree as ET
 
 import requests
+
+from .matching import base_title, normalize_artist, significant_qualifiers
 
 SEARCH_URL = "https://amp-api.music.apple.com/v1/catalog/%s/search"
 LYRICS_URL = "https://amp-api.music.apple.com/v1/catalog/%s/songs/%s/syllable-lyrics"
@@ -53,6 +56,11 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 _JWT = re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}")
 _ASSET = re.compile(r'src="(/assets/[^"]+\.js)"')
+# "(feat. X)", "(Official Audio)", "(Live cover by ...)" - a trailing
+# parenthetical the catalogue does not carry in its track name.
+_PAREN_SUFFIX = re.compile(r"\s*[\(\[][^)\]]*[\)\]]\s*$")
+_ARTIST_SEP = re.compile(
+    r"\s*(?:,|;|&|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b)\s*", re.I)
 
 _TTML_NS = "{http://www.w3.org/ns/ttml}"
 _ITUNES_TIMING = "{http://music.apple.com/lyric-ttml-internal}timing"
@@ -71,6 +79,19 @@ _last_refresh = 0.0
 
 class AppleError(RuntimeError):
     pass
+
+
+class NeedsChoice(AppleError):
+    """Apple offered candidates and every one was refused.
+
+    Distinct from having no lyrics: the track may well be in the
+    catalogue under a name or length our checks would not accept, and a
+    person looking at the list can usually tell in a second.
+    """
+
+    def __init__(self, candidates):
+        super().__init__("%d candidate(s) refused" % len(candidates))
+        self.candidates = candidates
 
 
 class AppleUnavailable(AppleError):
@@ -97,52 +118,94 @@ def _headers(developer_token: str, media_user_token: str) -> dict:
     }
 
 
+def _candidate_tokens() -> list:
+    """Every distinct JWT the web player ships, in the order found.
+
+    There are several, for different Apple services, and only one of them
+    is accepted by the catalog API. Which comes first is not stable: the
+    player is served from a CDN and the bundles are rebuilt, so taking
+    the first match works until the day it does not.
+    """
+    found, seen = [], set()
+
+    def add(text: str) -> None:
+        for token in _JWT.findall(text):
+            if token not in seen:
+                seen.add(token)
+                found.append(token)
+
+    response = requests.get(WEB_PLAYER, headers={"User-Agent": UA},
+                            timeout=TIMEOUT)
+    if response.status_code == 429:
+        _record_error(WEB_PLAYER, response)
+        hold_off(_retry_after(response, THROTTLE_BACKOFF))
+        raise AppleError(
+            "music.apple.com is rate limiting us (429) - wait a few "
+            "minutes before trying again.\n%s" % describe_last_error())
+    if not response.ok:
+        _record_error(WEB_PLAYER, response)
+        raise AppleError("music.apple.com returned %s\n%s" % (
+            response.status_code, describe_last_error()))
+    add(response.text)
+    for path in _ASSET.findall(response.text)[:12]:
+        asset = requests.get("https://music.apple.com" + path,
+                             headers={"User-Agent": UA}, timeout=TIMEOUT)
+        if asset.ok:
+            add(asset.text)
+    return found
+
+
+def _token_works(token: str) -> bool:
+    """Whether the catalog API accepts this token.
+
+    One cheap public search, no retries and no backoff: a rejection here
+    is the answer, not something to wait out.
+    """
+    try:
+        response = requests.get(
+            SEARCH_URL % "us",
+            headers={"Authorization": "Bearer " + token,
+                     "Origin": "https://music.apple.com",
+                     "Referer": "https://music.apple.com/",
+                     "User-Agent": UA},
+            params={"term": "a", "types": "songs", "limit": "1"},
+            timeout=TIMEOUT)
+    except requests.RequestException:
+        return False
+    return response.status_code == 200
+
+
 def fetch_developer_token(force: bool = False) -> str:
-    """The Music web player's public developer token, cached."""
+    """A developer token the catalog API actually accepts, cached.
+
+    This used to take the first JWT on the page and hope. On a real
+    library that turned out to be the AMPWebPlay token, which the catalog
+    API refuses - with 429 "Request is forbidden", which reads exactly
+    like a rate limit and is not one. Hours were spent waiting out a
+    quota that did not exist. So each candidate is now tried, and the one
+    that answers is the one we keep.
+    """
     with _dev_lock:
         fresh = (not force and _dev_token["value"]
                  and time.time() - _dev_token["at"] < _DEV_TOKEN_TTL)
         if fresh:
             return _dev_token["value"]
     try:
-        _await_throttle()
-        response = requests.get(WEB_PLAYER, headers={"User-Agent": UA},
-                                timeout=TIMEOUT)
-        if response.status_code == 429:
-            # Scraping the player is the heaviest thing we do to Apple, so
-            # a 429 here holds the catalog calls back as well.
-            _record_error(WEB_PLAYER, response)
-            hold_off(_retry_after(response, THROTTLE_BACKOFF))
-            raise AppleError(
-                "music.apple.com is rate limiting us (429) - wait a few "
-                "minutes before trying again.\n%s" % describe_last_error())
-        if not response.ok:
-            _record_error(WEB_PLAYER, response)
-            raise AppleError("music.apple.com returned %s\n%s" % (
-                response.status_code, describe_last_error()))
-        html = response.text
-        token = ""
-        found = _JWT.search(html)
-        if found:
-            token = found.group(0)
-        else:
-            for path in _ASSET.findall(html)[:12]:
-                asset = requests.get("https://music.apple.com" + path,
-                                     headers={"User-Agent": UA}, timeout=TIMEOUT)
-                if not asset.ok:
-                    continue
-                found = _JWT.search(asset.text)
-                if found:
-                    token = found.group(0)
-                    break
+        candidates = _candidate_tokens()
     except requests.RequestException as exc:
         raise AppleError("could not reach Apple Music: %s" % exc) from exc
-    if not token:
+    if not candidates:
         raise AppleError("no developer token found in the Music web player")
-    with _dev_lock:
-        _dev_token["value"] = token
-        _dev_token["at"] = time.time()
-    return token
+    for token in candidates:
+        if _token_works(token):
+            with _dev_lock:
+                _dev_token["value"] = token
+                _dev_token["at"] = time.time()
+            return token
+    raise AppleError(
+        "found %d developer token(s) in the Music web player and the catalog "
+        "API refused every one. Apple may have changed what it requires; "
+        "run 'beetdrop apple-raw' to see the response." % len(candidates))
 
 
 def _retry_after(response, fallback: float) -> float:
@@ -327,12 +390,20 @@ def _get_json_auth(url, developer_token: str, media_user_token: str,
     return data, status, fresh
 
 
-def search_song(developer_token: str, media_user_token: str, storefront: str,
-                artist: str, title: str,
-                duration_seconds: Optional[int] = None) -> Optional[str]:
-    """The catalog id of the best match, or None."""
+def search_song_row(developer_token: str, storefront: str, artist: str,
+                    title: str, duration_seconds: Optional[int] = None):
+    """The best-matching catalog song, as Apple returned it, or None.
+
+    Deliberately anonymous - no media-user-token. Catalog search is
+    public data and answers perfectly well without one, and Apple's rate
+    limit is attached to the account rather than the address: a signed-in
+    search and an anonymous one, same second and same address, came back
+    429 and 200 respectively. Searching anonymously therefore spends none
+    of the account's allowance, leaving all of it for the lyrics call
+    that genuinely needs the subscription.
+    """
     data, status, _ = _get_json_auth(
-        SEARCH_URL % storefront, developer_token, media_user_token,
+        SEARCH_URL % storefront, developer_token, "",
         {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
          "limit": "5"})
     if status in UNAVAILABLE_STATUS:
@@ -343,22 +414,250 @@ def search_song(developer_token: str, media_user_token: str, storefront: str,
         songs = data["results"]["songs"]["data"]
     except (KeyError, TypeError):
         return None
-    best, best_delta = None, None
-    for song in songs:
-        attributes = song.get("attributes") or {}
-        millis = attributes.get("durationInMillis")
-        if duration_seconds and millis:
-            delta = abs(millis / 1000.0 - duration_seconds)
-            if delta > DURATION_TOLERANCE:
-                continue  # a different recording
-        else:
-            delta = float("inf")
+    return _best_by_duration(songs, duration_seconds)
+
+
+# A catalog search is a loose text match, so duration alone is not enough
+# to accept a result: "Electric Light Orchestra - Starlight" came back as
+# "Electric Light Orchestra Part II - Thousand Eyes", a different song by
+# a different band that happened to run about as long. Wrong lyrics are
+# worse than none, so a candidate has to look like what was asked for.
+MIN_TITLE_RATIO = 0.85
+MIN_ARTIST_RATIO = 0.75
+
+
+def _ratio(one: str, two: str) -> float:
+    return SequenceMatcher(None, one, two).ratio()
+
+
+def _primary_artist(name: str) -> str:
+    """"Billie Eilish, Khalid" / "Idina Menzel featuring AURORA" -> the
+    name a catalogue files the track under."""
+    return _ARTIST_SEP.split(name, 1)[0].strip() or name.strip()
+
+
+def _same_artist(mine: str, theirs: str) -> float:
+    """Best score across the full credit and the primary name, so
+    "Idina Menzel featuring AURORA" still matches "Idina Menzel"."""
+    ours = {normalize_artist(mine), normalize_artist(_primary_artist(mine))}
+    hers = {normalize_artist(theirs), normalize_artist(_primary_artist(theirs))}
+    return max(_ratio(a, b) for a in ours for b in hers)
+
+
+def looks_like_the_track(song, artist: str, title: str) -> bool:
+    """Whether a catalog hit really is the track we asked for.
+
+    Judges only what Apple actually told us. A row without a name is not
+    evidence of a mismatch, and rejecting on absent data is the mistake
+    the has-lyrics flag already taught: only a real disagreement counts.
+    """
+    attributes = (song or {}).get("attributes") or {}
+    their_title = attributes.get("name") or ""
+    their_artist = attributes.get("artistName") or ""
+    if title and their_title:
+        if _ratio(base_title(their_title), base_title(title)) < MIN_TITLE_RATIO:
+            return False
+    if artist and their_artist:
+        if _same_artist(artist, their_artist) < MIN_ARTIST_RATIO:
+            return False
+    # A live or remixed cut is a different performance, and its lyrics are
+    # timed to that performance: accepting one for a studio track gives
+    # words that drift further out of step the longer it plays. The base
+    # titles match exactly here - "Don't Lose My Number" against "Don't
+    # Lose My Number (Live from the Serious Tour 1990)" - so only the
+    # qualifier tells them apart.
+    if title and their_title:
+        if significant_qualifiers(their_title) != significant_qualifiers(title):
+            return False
+    return True
+
+
+def describe_song(song) -> dict:
+    """A catalog row reduced to what a person needs to judge it by."""
+    attributes = (song or {}).get("attributes") or {}
+    millis = attributes.get("durationInMillis") or 0
+    return {
+        "id": (song or {}).get("id") or "",
+        "title": attributes.get("name") or "",
+        "artist": attributes.get("artistName") or "",
+        "album": attributes.get("albumName") or "",
+        "year": (attributes.get("releaseDate") or "")[:4],
+        "duration": int(millis / 1000) if millis else 0,
+    }
+
+
+def _rejection(song, duration_seconds, artist, title) -> str:
+    """Why this candidate cannot be used, or "" when it can.
+
+    Worded for someone reading a list of refusals and deciding whether we
+    were right, so it says which check failed rather than just "no".
+    """
+    if not looks_like_the_track(song, artist, title):
+        attributes = (song or {}).get("attributes") or {}
+        theirs, ours = attributes.get("name") or "", title
+        if (theirs and ours and significant_qualifiers(theirs)
+                != significant_qualifiers(ours)):
+            return "a different performance (live, remix or similar)"
+        return "a different song or artist"
+    millis = ((song or {}).get("attributes") or {}).get("durationInMillis")
+    if duration_seconds and millis:
+        delta = abs(millis / 1000.0 - duration_seconds)
+        if delta > DURATION_TOLERANCE:
+            return "%.0fs longer or shorter than your file" % delta
+    return ""
+
+
+def choose_song(songs, duration_seconds: Optional[int], artist: str = "",
+                title: str = ""):
+    """(best, rejected) - the candidate to use, and the ones refused.
+
+    The refusals are the point: once matching started turning candidates
+    away, a track with no lyrics could mean Apple had nothing or that we
+    declined everything it offered, and only the second is worth a human
+    glance.
+    """
+    best, best_delta, rejected = None, None, []
+    for song in songs or []:
+        reason = _rejection(song, duration_seconds, artist, title)
+        if reason:
+            rejected.append((song, reason))
+            continue
+        millis = (song.get("attributes") or {}).get("durationInMillis")
+        delta = (abs(millis / 1000.0 - duration_seconds)
+                 if duration_seconds and millis else float("inf"))
         if best is None or delta < best_delta:
-            best, best_delta = song.get("id"), delta
-    # Nothing agreed on duration: fall back to Apple's own ranking.
-    if best is None and songs and not duration_seconds:
-        best = songs[0].get("id")
-    return best
+            best, best_delta = song, delta
+    # Nothing to compare lengths against: fall back to Apple's own ranking,
+    # but only among candidates that passed the name checks.
+    if best is None and not duration_seconds:
+        for song, reason in list(rejected):
+            if reason.startswith("a different"):
+                continue
+            best = song
+            rejected.remove((song, reason))
+            break
+    return best, rejected
+
+
+def _best_by_duration(songs, duration_seconds: Optional[int],
+                      artist: str = "", title: str = ""):
+    return choose_song(songs, duration_seconds, artist, title)[0]
+
+
+def has_synced_lyrics(song) -> Optional[bool]:
+    """Whether Apple says this song has time-synced lyrics.
+
+    The search response carries hasLyrics and hasTimeSyncedLyrics without
+    being asked, so a track Apple has no synced lyrics for can be dropped
+    before spending the second request on it. None when Apple did not say
+    - absence is not a no, so the caller should still ask.
+    """
+    attributes = (song or {}).get("attributes") or {}
+    if "hasTimeSyncedLyrics" in attributes:
+        return bool(attributes["hasTimeSyncedLyrics"])
+    if attributes.get("hasLyrics") is False:
+        return False
+    return None
+
+
+def search_song(developer_token: str, media_user_token: str, storefront: str,
+                artist: str, title: str,
+                duration_seconds: Optional[int] = None) -> Optional[str]:
+    """The catalog id of the best match, or None.
+
+    media_user_token is accepted and ignored: the search needs no account.
+    """
+    best = search_song_row(developer_token, storefront, artist, title,
+                           duration_seconds)
+    return (best or {}).get("id")
+
+
+# Only the bracketed form works. Plain "include=syllable-lyrics" on a
+# search returns 200 and carries nothing, which would look like a track
+# with no lyrics rather than a parameter Apple ignored.
+SEARCH_INCLUDE = "include[songs]"
+
+
+def _ttml_of(song) -> Optional[str]:
+    """The lyrics carried alongside a search result, if any."""
+    relationships = (song or {}).get("relationships") or {}
+    for name in ("syllable-lyrics", "lyrics"):
+        for row in (relationships.get(name) or {}).get("data") or []:
+            ttml = (row.get("attributes") or {}).get("ttml")
+            if ttml:
+                return ttml
+    return None
+
+
+def lyrics_for_song(developer_token: str, media_user_token: str,
+                    storefront: str, song_id: str,
+                    word_by_word: bool = False) -> Optional[str]:
+    """The LRC for one known catalog id, skipping matching entirely.
+
+    What a decision resolves to: the track has been identified by hand, so
+    nothing about names or durations is asked again.
+    """
+    ttml = fetch_ttml(developer_token, media_user_token, storefront, song_id)
+    return ttml_to_lrc(ttml, word_by_word=word_by_word) if ttml else None
+
+
+def _simplify_title(title: str) -> str:
+    """"Song (Official Audio)" / "Song (Live cover by X)" -> "Song"."""
+    simple = _PAREN_SUFFIX.sub("", title or "").strip()
+    return simple or (title or "").strip()
+
+
+def _search_once(developer_token: str, media_user_token: str, storefront: str,
+                 artist: str, title: str, duration_seconds):
+    data, status, _ = _get_json_auth(
+        SEARCH_URL % storefront, developer_token, media_user_token,
+        {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
+         "limit": "5", SEARCH_INCLUDE: "syllable-lyrics"})
+    if status in UNAVAILABLE_STATUS:
+        raise AppleUnavailable("catalog search failed (status %s)" % status)
+    if not data:
+        return None, []
+    try:
+        songs = data["results"]["songs"]["data"]
+    except (KeyError, TypeError):
+        return None, []
+    return choose_song(songs, duration_seconds, artist, title)
+
+
+def search_with_lyrics(developer_token: str, media_user_token: str,
+                       storefront: str, artist: str, title: str,
+                       duration_seconds: Optional[int] = None):
+    """(song, ttml) for the best match, in a single request.
+
+    Apple will attach the lyrics to a search result, so the two calls a
+    track used to cost - search for an id, then fetch by that id - become
+    one. Over a few thousand tracks that is the difference between a scan
+    Apple tolerates and one it does not.
+
+    ttml comes back None when the search did not carry it, which is not
+    the same as the track having none: the caller should fall back to
+    fetching by id rather than record a miss.
+    """
+    # Two attempts at most, and the second only when the first found
+    # nothing usable. LRCLIB has retried with a simplified query for ages
+    # while this asked once with whatever the tag said: a title carrying
+    # "(Official Audio)" or "(Pop Punk cover by ...)" goes into the term
+    # verbatim and Apple answers with something unrelated, which then gets
+    # refused as "a different song" - our query's fault, not Apple's.
+    attempts = [(artist, title)]
+    loosened = (_primary_artist(artist), _simplify_title(title))
+    if loosened != (artist, title):
+        attempts.append(loosened)
+
+    rejected = []
+    for one_artist, one_title in attempts:
+        best, refused = _search_once(developer_token, media_user_token,
+                                     storefront, one_artist, one_title,
+                                     duration_seconds)
+        if best is not None:
+            return best, _ttml_of(best), refused
+        rejected = refused or rejected
+    return None, None, rejected
 
 
 def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
@@ -418,18 +717,34 @@ def _render_words(spans, default_begin: float) -> str:
     A word missing a begin, or carrying one earlier than the word before
     it, would make a player rewind mid-line; it inherits the running time
     instead.
+
+    Apple's endpoint is /syllable-lyrics and it times *syllables*, so
+    "Tumble" arrives as two adjacent spans. The only thing telling a
+    syllable apart from the next word is the whitespace between them,
+    which lives in the earlier span's tail. Syllables keep their own tag
+    but are not pulled apart by a space.
     """
-    pieces, running = [], default_begin
+    pieces, running, gap = [], default_begin, False
     for span in spans:
-        word = "".join(span.itertext()).strip()
+        raw = "".join(span.itertext())
+        word = raw.strip()
+        gap = gap or raw[:1].isspace()
         if not word:
+            gap = gap or bool(raw) or (span.tail or "")[:1].isspace()
             continue
         at = _parse_time(span.get("begin"))
         if at is None or at < running:
             at = running
         running = at
+        if pieces and gap:
+            pieces.append(" ")
         pieces.append("<%s>%s" % (_stamp(at), word))
-    return " ".join(pieces)
+        gap = raw[-1:].isspace() or (span.tail or "")[:1].isspace()
+    # A body carrying no whitespace at all would otherwise run every word
+    # of the line together; fall back to the old spacing there.
+    if len(pieces) > 1 and " " not in pieces:
+        return " ".join(pieces)
+    return "".join(pieces)
 
 
 def ttml_to_lrc(ttml: str, word_by_word: bool = False) -> Optional[str]:
@@ -572,10 +887,25 @@ def fetch_synced(media_user_token: str, artist: str, title: str,
     except AppleError as exc:
         # No token means Apple was never asked, not that it had nothing.
         raise AppleUnavailable(str(exc)) from exc
-    song_id = search_song(developer_token, media_user_token, storefront,
-                          artist, title, duration_seconds)
+    # One request: the search carries the lyrics with it.
+    song, ttml, rejected = search_with_lyrics(
+        developer_token, media_user_token, storefront, artist, title,
+        duration_seconds)
+    if song is None and rejected:
+        # Everything Apple offered was turned away. That is not the same as
+        # Apple having nothing, and it is the only case worth a human
+        # glance, so hand the candidates back through the exception.
+        raise NeedsChoice([dict(describe_song(other), reason=why)
+                           for other, why in rejected])
+    song_id = (song or {}).get("id")
     if not song_id:
         return None
+    if ttml:
+        return ttml_to_lrc(ttml, word_by_word=word_by_word)
+    # Apple did not attach them this time. That is not "no lyrics", so ask
+    # by id rather than record a miss - and no shortcut on the has-lyrics
+    # flag either: measured against a real library it was wrong 9 times in
+    # 17, flagging tracks as having none and then serving them when asked.
     ttml = fetch_ttml(developer_token, media_user_token, storefront, song_id)
     if not ttml:
         return None

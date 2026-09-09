@@ -7,6 +7,7 @@ queue view can be rebuilt on page load.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -85,6 +86,105 @@ class Store:
                 " key TEXT PRIMARY KEY,"
                 " value TEXT NOT NULL)"
             )
+            # A track whose candidates were all refused, kept for a person
+            # to judge. Keyed by path so a rescan updates rather than
+            # duplicates, and cleared once decided.
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS lyric_reviews ("
+                " path TEXT PRIMARY KEY,"
+                " artist TEXT NOT NULL DEFAULT '',"
+                " title TEXT NOT NULL DEFAULT '',"
+                " duration INTEGER NOT NULL DEFAULT 0,"
+                " candidates TEXT NOT NULL DEFAULT '[]',"
+                " created_at REAL NOT NULL)"
+            )
+            # A decision, which outranks anything matching would pick.
+            # song_id empty means "leave this track alone".
+            self._db.execute(
+                "CREATE TABLE IF NOT EXISTS lyric_choices ("
+                " path TEXT PRIMARY KEY,"
+                " song_id TEXT NOT NULL DEFAULT '',"
+                " label TEXT NOT NULL DEFAULT '',"
+                " created_at REAL NOT NULL)"
+            )
+            self._db.commit()
+
+    # -- lyric review queue ---------------------------------------------
+
+    def add_review(self, path: str, artist: str, title: str, duration: int,
+                   candidates: list) -> None:
+        """Record that every candidate for this track was refused."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO lyric_reviews"
+                " (path, artist, title, duration, candidates, created_at)"
+                " VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(path) DO UPDATE SET"
+                " artist=excluded.artist, title=excluded.title,"
+                " duration=excluded.duration, candidates=excluded.candidates",
+                (path, artist, title, int(duration or 0),
+                 json.dumps(candidates), time.time()))
+            self._db.commit()
+
+    def list_reviews(self, limit: int = 200) -> list:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM lyric_reviews ORDER BY created_at LIMIT ?",
+                (limit,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["candidates"] = json.loads(item["candidates"])
+            except ValueError:
+                item["candidates"] = []
+            out.append(item)
+        return out
+
+    def count_reviews(self) -> int:
+        with self._lock:
+            return self._db.execute(
+                "SELECT COUNT(*) FROM lyric_reviews").fetchone()[0]
+
+    def drop_review(self, path: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM lyric_reviews WHERE path = ?", (path,))
+            self._db.commit()
+
+    def clear_reviews(self) -> int:
+        with self._lock:
+            removed = self._db.execute("DELETE FROM lyric_reviews").rowcount
+            self._db.commit()
+        return removed
+
+    # -- decisions --------------------------------------------------------
+
+    def set_choice(self, path: str, song_id: str, label: str = "") -> None:
+        """Remember a decision. It outranks matching from now on, so a
+        rescan never quietly undoes it."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO lyric_choices (path, song_id, label, created_at)"
+                " VALUES (?,?,?,?)"
+                " ON CONFLICT(path) DO UPDATE SET"
+                " song_id=excluded.song_id, label=excluded.label",
+                (path, song_id, label, time.time()))
+            self._db.commit()
+
+    def get_choice(self, path: str):
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM lyric_choices WHERE path = ?", (path,)).fetchone()
+        return dict(row) if row else None
+
+    def all_choices(self) -> dict:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM lyric_choices").fetchall()
+        return {row["path"]: dict(row) for row in rows}
+
+    def drop_choice(self, path: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM lyric_choices WHERE path = ?", (path,))
             self._db.commit()
 
     def close(self) -> None:

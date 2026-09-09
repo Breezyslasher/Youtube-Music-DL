@@ -22,6 +22,7 @@ from .config import Config
 from .library import write_lyrics_sidecar
 from .lyrics import (
     LyricsUnavailable,
+    carries_no_lyrics,
     fetch_synced_lyrics,
     has_backwards_word_timing,
     has_word_timing,
@@ -54,6 +55,226 @@ REQUEST_SPACING = float(os.environ.get("LYRICS_REQUEST_SPACING", "0.2"))
 
 def _noop(*args) -> None:
     pass
+
+
+@dataclass
+class CoverageEstimate:
+    """How much of the library Apple could serve word-by-word.
+
+    Keeps "Apple never found this track" apart from "Apple found it and
+    has no word timing". Lumping them together, as this first did, blames
+    Apple for what is really a failed match - and on a library with rough
+    tags that is most of the gap, so the headline percentage came out far
+    below what Apple could actually supply.
+    """
+    population: int = 0     # line-level tracks an upgrade would visit
+    checked: int = 0        # tracks we got as far as asking about
+    matched: int = 0        # of those, ones Apple recognised
+    word_level: int = 0     # of the matches, ones with word timing
+    not_found: int = 0      # Apple recognised nothing - a matching failure
+    no_word: int = 0        # matched, but Apple has no word timing
+    deferred: int = 0       # rate-limited or unreachable
+    skipped: int = 0        # no usable artist/title to search with
+    # Names, capped, so the numbers can be checked by eye.
+    word_files: list = field(default_factory=list)
+    not_found_files: list = field(default_factory=list)
+    matched_examples: list = field(default_factory=list)
+
+    @property
+    def pct(self) -> float:
+        """Share of the tracks Apple recognised. The honest headline: it
+        says what Apple has, not how good our metadata is."""
+        return 100.0 * self.word_level / self.matched if self.matched else 0.0
+
+    @property
+    def pct_of_all(self) -> float:
+        """Share of everything asked about, matching failures included -
+        what an upgrade pass would actually deliver today."""
+        return 100.0 * self.word_level / self.checked if self.checked else 0.0
+
+    @property
+    def match_pct(self) -> float:
+        return 100.0 * self.matched / self.checked if self.checked else 0.0
+
+    @property
+    def margin(self) -> float:
+        """95% confidence half-width on pct, in percentage points, with
+        the finite-population correction."""
+        if self.matched < 2:
+            return 100.0
+        share = self.word_level / self.matched
+        spread = (share * (1 - share) / self.matched) ** 0.5
+        if self.population > self.matched:
+            spread *= ((self.population - self.matched)
+                       / (self.population - 1)) ** 0.5
+        return 100.0 * 1.96 * spread
+
+    @property
+    def projected(self) -> int:
+        """Tracks an upgrade would actually improve, matching failures
+        included - those deliver nothing however good Apple's catalogue is."""
+        return int(round(self.population * self.pct_of_all / 100.0))
+
+
+def estimate_word_coverage(config: Config, sample: int = 100,
+                           on_detail: Callable[[str], None] = _noop,
+                           on_progress: Callable[[float], None] = _noop,
+                           seed: Optional[int] = None) -> CoverageEstimate:
+    """Ask Apple about a random sample of the tracks an upgrade would
+    visit, and report what share of them it has word timing for.
+
+    Goes straight to Apple rather than through the provider chain: only
+    Apple has word timing, and asking directly is what makes it possible
+    to say whether a track failed because Apple has nothing or because
+    nothing we searched for matched. sample=0 checks every track.
+
+    Read-only, and safe to interrupt.
+    """
+    import random
+
+    from . import apple
+    from .lyrics import LyricsUnavailable
+
+    files = list(iter_audio_line_level_lyrics(config.music_root))
+    result = CoverageEstimate(population=len(files))
+    if not files:
+        return result
+    chosen = (files if sample <= 0 or sample >= len(files)
+              else random.Random(seed).sample(files, sample))
+    on_detail("asking Apple about %d of %d tracks..." % (len(chosen), len(files)))
+    storefront = config.apple_storefront or "us"
+
+    def note(bucket: list, text: str) -> None:
+        if len(bucket) < 50:
+            bucket.append(text)
+
+    for index, path in enumerate(chosen):
+        artist, title, album, duration = read_track_meta(path) or ("", "", "", None)
+        if not artist or not title:
+            p_artist, p_title, p_album = meta_from_path(path, config.music_root)
+            artist, title = artist or p_artist, title or p_title
+        title = tidy_track_name(title, artist)
+        if not (artist and title):
+            result.skipped += 1
+        else:
+            result.checked += 1
+            try:
+                developer = apple.fetch_developer_token()
+                song = apple.search_song_row(developer, storefront, artist,
+                                             title, duration)
+                if song is None:
+                    result.not_found += 1
+                    note(result.not_found_files, "%s - %s" % (artist, title))
+                else:
+                    result.matched += 1
+                    attributes = song.get("attributes") or {}
+                    note(result.matched_examples, "%s - %s  ->  %s - %s" % (
+                        artist, title, attributes.get("artistName"),
+                        attributes.get("name")))
+                    ttml = None
+                    if apple.has_synced_lyrics(song) is not False:
+                        ttml = apple.fetch_ttml(developer, config.apple_token,
+                                                storefront, song.get("id"))
+                    if ttml and apple.is_word_level(ttml):
+                        result.word_level += 1
+                        note(result.word_files, "%s - %s" % (artist, title))
+                    else:
+                        result.no_word += 1
+            except (apple.AppleUnavailable, LyricsUnavailable) as exc:
+                result.checked -= 1
+                result.deferred += 1
+                if result.deferred <= 3:
+                    on_detail("deferred: %s" % exc)
+            except Exception:
+                result.no_word += 1
+        if REQUEST_SPACING:
+            time.sleep(REQUEST_SPACING)
+        on_progress((index + 1) / len(chosen) * 100.0)
+        on_detail("%d/%d checked, %d matched, %d with word-by-word" % (
+            index + 1, len(chosen), result.matched, result.word_level))
+    return result
+
+
+@dataclass
+class SkipCheck:
+    """Whether Apple's hasTimeSyncedLyrics flag can be trusted to skip a
+    track without asking for its lyrics.
+
+    The flag is read off an anonymous catalog search, and the saving is
+    real - one request instead of two - but the whole thing rests on the
+    flag being accurate without an account, which was never verified.
+    A single track that Apple flags false and then serves lyrics for
+    means the skip is silently discarding lyrics, and must come out.
+    """
+    searched: int = 0        # tracks looked up
+    flagged_false: int = 0   # of those, ones Apple said have no synced lyrics
+    had_lyrics: int = 0      # of those, ones that returned lyrics anyway
+    had_word: int = 0        # of those, ones with word timing
+    deferred: int = 0
+    wrong_examples: list = field(default_factory=list)
+
+    @property
+    def flag_is_wrong(self) -> bool:
+        return self.had_lyrics > 0
+
+    @property
+    def wrong_pct(self) -> float:
+        return (100.0 * self.had_lyrics / self.flagged_false
+                if self.flagged_false else 0.0)
+
+
+def verify_skip_flag(config: Config, sample: int = 30,
+                     max_searches: int = 400,
+                     on_detail: Callable[[str], None] = _noop) -> SkipCheck:
+    """Fetch lyrics for tracks Apple says have none, and see if it lied.
+
+    Read-only and deliberately wasteful: it makes exactly the request the
+    skip exists to avoid, because that is the only way to find out
+    whether avoiding it loses anything.
+    """
+    from . import apple
+
+    result = SkipCheck()
+    storefront = config.apple_storefront or "us"
+    for path in iter_audio_line_level_lyrics(config.music_root):
+        if result.flagged_false >= sample or result.searched >= max_searches:
+            break
+        artist, title, _, duration = read_track_meta(path) or ("", "", "", None)
+        if not artist or not title:
+            p_artist, p_title, _ = meta_from_path(path, config.music_root)
+            artist, title = artist or p_artist, title or p_title
+        title = tidy_track_name(title, artist)
+        if not (artist and title):
+            continue
+        result.searched += 1
+        try:
+            developer = apple.fetch_developer_token()
+            song = apple.search_song_row(developer, storefront, artist, title,
+                                         duration)
+            if song is None or apple.has_synced_lyrics(song) is not False:
+                continue
+            result.flagged_false += 1
+            # The request the skip would have avoided.
+            ttml = apple.fetch_ttml(developer, config.apple_token, storefront,
+                                    song.get("id"))
+            if ttml:
+                result.had_lyrics += 1
+                word = apple.is_word_level(ttml)
+                if word:
+                    result.had_word += 1
+                if len(result.wrong_examples) < 20:
+                    result.wrong_examples.append("%s - %s (%s)" % (
+                        artist, title, "word-by-word" if word else "line-level"))
+        except Exception as exc:
+            result.deferred += 1
+            if result.deferred <= 3:
+                on_detail("deferred: %s" % exc)
+        if REQUEST_SPACING:
+            time.sleep(REQUEST_SPACING)
+        on_detail("%d searched, %d flagged 'no synced lyrics', %d of those "
+                  "had lyrics anyway" % (result.searched, result.flagged_false,
+                                         result.had_lyrics))
+    return result
 
 
 @dataclass
@@ -152,15 +373,17 @@ def iter_lyrics_files(root: Path):
 
 
 def find_bad_lyrics(root: Path) -> list:
-    """Existing .lrc sidecars that are generated placeholder text rather
-    than real lyrics (perfectly uniform line timing)."""
+    """Existing .lrc sidecars worth deleting: generated placeholder text
+    with perfectly uniform line timing, and files carrying no lyrics at
+    all - a lone "Instrumental" or an empty timestamp, which still makes
+    the track look done so no later pass revisits it."""
     bad = []
     for path in iter_lyrics_files(root):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if looks_synthetic(text):
+        if looks_synthetic(text) or carries_no_lyrics(text):
             bad.append(path)
     return bad
 
@@ -209,6 +432,28 @@ def iter_audio_line_level_lyrics(root: Path):
         except OSError:
             continue
         if not has_word_timing(text) or has_backwards_word_timing(text):
+            yield path
+
+
+def iter_audio_word_level_lyrics(root: Path):
+    """Audio whose .lrc already carries per-word timing.
+
+    A rendering defect in a word-level sidecar can only be repaired by
+    asking Apple again: the file itself no longer records where the word
+    breaks were, so nothing on disk can tell a sound file from a spoiled
+    one. This yields all of them, for a pass that re-renders the lot.
+    """
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        sidecar = path.with_suffix(".lrc")
+        if not sidecar.is_file():
+            continue
+        try:
+            text = sidecar.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if has_word_timing(text):
             yield path
 
 
@@ -265,6 +510,58 @@ def read_track_meta(path: Path):
     return (first("artist"), first("title"), first("album"), duration)
 
 
+def read_isrc(path: Path) -> str:
+    """The recording's ISRC from its tags, or "".
+
+    An ISRC names one exact recording, so a catalogue lookup by ISRC
+    cannot return the wrong version the way a text search can. Every
+    format spells it differently and none of them consistently: MP3 uses
+    the TSRC frame, Vorbis/FLAC a plain ISRC comment, and MP4 has no
+    standard atom at all, only iTunes' freeform one.
+    """
+    try:
+        audio = mutagen.File(str(path))
+    except Exception:
+        return ""
+    if audio is None:
+        return ""
+    tags = getattr(audio, "tags", None)
+    if not tags:
+        return ""
+
+    def clean(value) -> str:
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", "ignore")
+        return str(value).strip().replace("-", "").upper()
+
+    for key in ("TSRC", "ISRC", "isrc",
+                "----:com.apple.iTunes:ISRC", "----:com.apple.iTunes:isrc"):
+        try:
+            if key in tags:
+                found = clean(tags[key])
+                if found:
+                    return found
+        except Exception:
+            continue
+    return ""
+
+
+def isrc_coverage(root: Path, limit: int = 0) -> tuple:
+    """(with_isrc, checked) across the library's audio files."""
+    with_isrc = checked = 0
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        checked += 1
+        if read_isrc(path):
+            with_isrc += 1
+        if limit and checked >= limit:
+            break
+    return with_isrc, checked
+
+
 def meta_from_path(path: Path, root: Path):
     """Best-effort (artist, title, album) from the folder layout and file
     name when the tags don't carry them. Understands Beetdrop's own layout
@@ -297,6 +594,16 @@ def meta_from_path(path: Path, root: Path):
     return artist, title, album
 
 
+def _lyrics_by_choice(config: Config, song_id: str,
+                      word_by_word: bool = False) -> Optional[str]:
+    """Lyrics for a track someone has identified by hand."""
+    from . import apple
+    developer = apple.fetch_developer_token()
+    return apple.lyrics_for_song(developer, config.apple_token,
+                                 config.apple_storefront or "us", song_id,
+                                 word_by_word=word_by_word)
+
+
 def backfill_lyrics(
     config: Config,
     on_progress: Callable[[float], None] = _noop,
@@ -304,6 +611,8 @@ def backfill_lyrics(
     files: Optional[list] = None,
     purge_bad: bool = False,
     upgrade: bool = False,
+    redo_words: bool = False,
+    store=None,
 ) -> BackfillResult:
     """Fetch and write .lrc sidecars for library tracks missing them.
 
@@ -316,18 +625,32 @@ def backfill_lyrics(
     the same lyrics: a result without word timing is discarded rather than
     written over what is already there.
 
+    redo_words widens that to every word-level sidecar, sound or not. It
+    is for repairing a defect in how we rendered them, which no test of
+    the file can spot - the file no longer says where Apple put the word
+    breaks - so the only honest answer is to fetch them all again.
+
     on_progress/on_detail let the job layer mirror the scan and also act as
     cancellation checkpoints. `files` lets a caller pre-compute the list.
     """
+    # Re-rendering wants everything an upgrade does - per-word timing, and
+    # a file replaced only by a sound word-level one - over a wider net.
+    upgrade = upgrade or redo_words
     purged = 0
     if purge_bad:
         on_detail("checking existing lyrics for placeholder junk...")
         purged = purge_bad_lyrics(config.music_root, on_detail)
     if files is None:
-        files = list(iter_audio_line_level_lyrics(config.music_root) if upgrade
-                     else iter_audio_missing_lyrics(config.music_root))
+        if redo_words:
+            files = list(iter_audio_word_level_lyrics(config.music_root))
+        else:
+            files = list(iter_audio_line_level_lyrics(config.music_root)
+                         if upgrade else
+                         iter_audio_missing_lyrics(config.music_root))
     total = len(files)
     added = skipped = no_match = upgraded = deferred = 0
+    # Decisions already made outrank matching, so a rescan never undoes one.
+    choices = store.all_choices() if store is not None else {}
 
     for index, path in enumerate(files):
         meta = read_track_meta(path)
@@ -346,19 +669,34 @@ def backfill_lyrics(
         if not (artist and title):
             skipped += 1
         else:
+            chosen = choices.get(str(path))
+            if chosen is not None and not chosen.get("song_id"):
+                skipped += 1        # marked "leave this one alone"
+                if REQUEST_SPACING:
+                    time.sleep(REQUEST_SPACING)
+                on_progress((index + 1) / total * 100.0)
+                continue
+            refused = []
             try:
-                lrc = fetch_synced_lyrics(
-                    artist, title, album, duration,
-                    musixmatch_token=config.musixmatch_token,
-                    provider=config.lyrics_provider,
-                    apple_token=config.apple_token,
-                    apple_storefront=config.apple_storefront,
-                    # An upgrade run is an explicit request for per-word
-                    # timing, so ask for it whatever the standing setting -
-                    # and accept nothing else, which keeps the pass to the
-                    # two Apple calls instead of the full ten-request chain.
-                    word_by_word=True if upgrade else config.word_lyrics,
-                    word_only=upgrade)
+                if chosen:
+                    # Identified by hand: no matching, no second-guessing.
+                    lrc = _lyrics_by_choice(
+                        config, chosen["song_id"],
+                        word_by_word=True if upgrade else config.word_lyrics)
+                else:
+                    lrc = fetch_synced_lyrics(
+                        artist, title, album, duration,
+                        musixmatch_token=config.musixmatch_token,
+                        provider=config.lyrics_provider,
+                        apple_token=config.apple_token,
+                        apple_storefront=config.apple_storefront,
+                        # An upgrade run is an explicit request for per-word
+                        # timing, so ask for it whatever the standing setting
+                        # - and accept nothing else, which keeps the pass to
+                        # the two Apple calls instead of the full chain.
+                        word_by_word=True if upgrade else config.word_lyrics,
+                        word_only=upgrade,
+                        on_candidates=refused.extend)
                 unavailable = None
             except LyricsUnavailable as exc:
                 # Not a miss: nobody could answer. Leave the track alone so
@@ -391,10 +729,18 @@ def backfill_lyrics(
                 try:
                     write_lyrics_sidecar(path, lrc)
                     added += 1
+                    if store is not None:
+                        store.drop_review(str(path))
                 except Exception:
                     no_match += 1  # write failed; treat as not added
             else:
                 no_match += 1
+                # Apple offered candidates and every one was refused. That
+                # is the only kind of miss a person can usefully overrule,
+                # so queue it rather than let it vanish into a count.
+                if refused and store is not None:
+                    store.add_review(str(path), artist, title,
+                                     int(duration or 0), refused[:8])
             if REQUEST_SPACING:
                 time.sleep(REQUEST_SPACING)
         on_detail("%d/%d checked, %d %s" % (

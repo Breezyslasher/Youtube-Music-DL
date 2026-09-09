@@ -102,7 +102,49 @@ def cmd_grab(args, config: Config) -> int:
 
 
 def cmd_scan_lyrics(args, config: Config) -> int:
-    from .backfill import backfill_lyrics, lyrics_stats
+    from .backfill import backfill_lyrics, estimate_word_coverage, lyrics_stats
+    if args.estimate is not None:
+        if not config.apple_token:
+            print("error: no Apple media-user-token configured, and Apple is "
+                  "the only source of word timing", file=sys.stderr)
+            return 1
+        est = estimate_word_coverage(config, sample=args.estimate,
+                                     on_detail=lambda text: print(text))
+        if not est.population:
+            print("nothing to upgrade: no line-level tracks found")
+            return 0
+        if not est.checked:
+            print("\nApple answered for none of the sample (%d deferred, "
+                  "%d had no usable tags) - try again when the rate limit "
+                  "clears" % (est.deferred, est.skipped))
+            return 2
+        print("\nApple recognised %d of the %d tracks asked about (%.0f%%)."
+              % (est.matched, est.checked, est.match_pct))
+        if est.matched:
+            print("Of the ones it recognised, %.0f%% (+/- %.0f) have "
+                  "word-by-word." % (est.pct, est.margin))
+        print("Across all %d tracks an upgrade would visit, that is about "
+              "%d tracks improved." % (est.population, est.projected))
+        if est.not_found:
+            print("\n%d of the sample matched nothing at all. Those are "
+                  "metadata, not Apple: better tags would find some of them."
+                  % est.not_found)
+            for name in est.not_found_files[:10]:
+                print("    no match: %s" % name)
+        if est.skipped:
+            print("  %d had no usable artist/title to search with" % est.skipped)
+        if est.deferred:
+            print("  %d could not be checked (rate limit or network); the "
+                  "estimate ignores them" % est.deferred)
+        if args.show_matches:
+            print("\nwhat Apple matched your tracks to:")
+            for line in est.matched_examples:
+                print("    %s" % line)
+        elif est.matched_examples:
+            print("\nspot-check a few matches (--show-matches for more):")
+            for line in est.matched_examples[:5]:
+                print("    %s" % line)
+        return 0
     if args.list:
         # Uncapped, one path per line, so it can be piped or grepped.
         stats = lyrics_stats(config.music_root, sample=0)
@@ -140,10 +182,15 @@ def cmd_scan_lyrics(args, config: Config) -> int:
         print("error: %s" % exc, file=sys.stderr)
         return 1
     result = backfill_lyrics(config, on_detail=lambda text: print(text),
-                             purge_bad=args.refresh, upgrade=args.upgrade)
+                             purge_bad=args.refresh, upgrade=args.upgrade,
+                             redo_words=args.redo_words)
     if result.purged:
         print("removed %d placeholder lyric files" % result.purged)
-    if args.upgrade:
+    if args.redo_words:
+        print("done: re-rendered %d of %d word-by-word tracks "
+              "(%d left as they were)" % (
+                  result.upgraded, result.total, result.no_match))
+    elif args.upgrade:
         print("done: upgraded %d of %d line-level tracks to word-by-word "
               "(%d had no word-level version)" % (
                   result.upgraded, result.total, result.no_match))
@@ -252,7 +299,9 @@ def cmd_apple_raw(args, config: Config) -> int:
     """
     import requests
 
-    from . import apple
+    from . import __version__, apple
+
+    print("beetdrop %s" % __version__)
 
     def show(label: str, response) -> None:
         print("\n=== %s ===" % label)
@@ -296,10 +345,289 @@ def cmd_apple_raw(args, config: Config) -> int:
                           params={"term": "Billie Eilish lovely",
                                   "types": "songs", "limit": "1"},
                           timeout=apple.TIMEOUT))
+        # 3. The same search with the developer token only. Catalog search
+        #    is public data, so this needs no account - and that is the
+        #    point: if it succeeds while the call above is refused, the
+        #    limit is attached to the media-user-token or its account, and
+        #    signing in again may clear it. If both are refused, it is the
+        #    address being limited and only time will.
+        anonymous = dict(apple._headers(developer, ""))
+        anonymous.pop("Media-User-Token", None)
+        show("GET catalog search WITHOUT the media-user-token",
+             requests.get(apple.SEARCH_URL % storefront, headers=anonymous,
+                          params={"term": "Billie Eilish lovely",
+                                  "types": "songs", "limit": "1"},
+                          timeout=apple.TIMEOUT))
     except Exception as exc:
         print("\ncatalog request failed: %s: %s" % (type(exc).__name__, exc))
         return 1
     return 0
+
+
+def cmd_apple_explore(args, config: Config) -> int:
+    """Test whether Apple offers a cheaper route than search-then-fetch.
+
+    An upgrade costs two calls per track: a text search for the song id,
+    then the lyrics fetch. Both halves might be improvable - the search
+    replaced by an exact ISRC lookup, and either half batched across many
+    songs - but only Apple can say which of those it actually supports.
+    So ask it, against the real token, and report what came back.
+    """
+    import requests
+
+    from . import apple
+    from .backfill import (AUDIO_EXTS, isrc_coverage, read_isrc,
+                           read_track_meta, tidy_track_name)
+
+    if not config.apple_token:
+        print("error: no Apple media-user-token configured", file=sys.stderr)
+        return 1
+    storefront = config.apple_storefront or "us"
+    try:
+        developer = apple.fetch_developer_token()
+    except apple.AppleError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    headers = apple._headers(developer, config.apple_token)
+
+    anonymous = dict(headers)
+    anonymous.pop("Media-User-Token", None)
+
+    def call(label: str, url: str, params=None, signed_in: bool = False) -> dict:
+        """signed_in only where the account is genuinely needed - lyrics.
+
+        Catalog metadata answers without one, and Apple's rate limit is on
+        the account: sending the token needlessly is what made this probe
+        report 429 while the code path it exists to test was working fine.
+        """
+        try:
+            response = requests.get(url,
+                                    headers=headers if signed_in else anonymous,
+                                    params=params, timeout=apple.TIMEOUT)
+        except Exception as exc:
+            print("  %-46s request failed: %s" % (label, exc))
+            return {}
+        ok = response.status_code == 200
+        print("  %-46s HTTP %s" % (label, response.status_code))
+        if not ok:
+            print("      %s" % (response.text or "")[:200])
+            return {}
+        try:
+            return response.json() or {}
+        except ValueError:
+            return {}
+
+    # 1. How many files could even use an ISRC lookup.
+    print("== ISRC tags in your library ==")
+    with_isrc, checked = isrc_coverage(config.music_root, limit=args.sample)
+    print("  %d of %d files sampled carry an ISRC (%.0f%%)" % (
+        with_isrc, checked, 100.0 * with_isrc / checked if checked else 0))
+    if not with_isrc:
+        print("  -> no ISRC lookup possible as things stand; the other "
+              "tests below do not need one")
+
+    # 2. Collect real material to probe with: song ids via the normal
+    #    search, and an ISRC from a tagged file.
+    #
+    #    One search, taken raw. search_song retries through the whole
+    #    backoff - four minutes of silence on a rate-limited account - and
+    #    a diagnostic must never do that: here the status code IS the
+    #    answer, so it is reported rather than waited out. One search also
+    #    returns several songs, so three ids cost one request, not three.
+    ids, isrc, tried = [], "", 0
+    query = ""
+    for path in sorted(config.music_root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        if not isrc and tried < args.sample:
+            isrc = read_isrc(path)
+        tried += 1
+        if not query:
+            artist, title, _, _ = read_track_meta(path) or ("", "", "", None)
+            if artist and title:
+                query = "%s %s" % (artist, tidy_track_name(title, artist))
+        if query and (isrc or tried >= args.sample):
+            break
+    if not query:
+        print("\nno track with both an artist and a title tag to search with")
+        return 1
+
+    print("\nresolving song ids with one search for %r ..." % query[:60])
+    found = call("GET /search", apple.SEARCH_URL % storefront,
+                 {"term": query, "types": "songs", "limit": "5"})
+    songs_found = (((found or {}).get("results") or {}).get("songs")
+                   or {}).get("data") or []
+    ids = [s.get("id") for s in songs_found if s.get("id")][:3]
+    if not ids:
+        print("\nNothing below can be tested without a song id. If the status "
+              "above was 429 this is the rate limit, not a fault in your "
+              "setup - wait a few minutes and run it again.")
+        return 2
+    print("probing with song ids %s%s" % (
+        ", ".join(ids), (" and ISRC %s" % isrc) if isrc else " (no ISRC found)"))
+
+    songs = "https://amp-api.music.apple.com/v1/catalog/%s/songs" % storefront
+
+    print("\n== can one request cover several songs? ==")
+    data = call("GET /songs?ids=a,b,c", songs, {"ids": ",".join(ids)})
+    got = len((data.get("data") or []))
+    print("      returned %d of %d songs" % (got, len(ids)))
+    if got == len(ids):
+        print("      -> batching works; the lookup half can be shared")
+
+    print("\n== can lyrics come back in that same request? ==")
+    for rel in ("lyrics", "syllable-lyrics"):
+        data = call("GET /songs?ids=...&include=%s" % rel, songs,
+                    {"ids": ",".join(ids), "include": rel}, signed_in=True)
+        rows = data.get("data") or []
+        carried = sum(1 for row in rows
+                      if ((row.get("relationships") or {}).get(rel, {})
+                          .get("data")))
+        if rows:
+            print("      %d of %d rows carried %s" % (carried, len(rows), rel))
+            if carried:
+                print("      -> lyrics can be batched; this is the big win")
+
+    # Every track currently costs two calls: search for the id, then fetch
+    # the lyrics. If the search can carry the lyrics itself that becomes
+    # one - a bigger saving than batching, and it needs no id up front.
+    print("\n== can the search itself carry the lyrics? ==")
+    for parameter in ("include[songs]", "include"):
+        for rel in ("syllable-lyrics", "lyrics"):
+            data = call("GET /search&%s=%s" % (parameter, rel),
+                        apple.SEARCH_URL % storefront,
+                        {"term": query, "types": "songs", "limit": "1",
+                         parameter: rel}, signed_in=True)
+            rows = (((data or {}).get("results") or {}).get("songs")
+                    or {}).get("data") or []
+            carried = sum(1 for row in rows
+                          if ((row.get("relationships") or {}).get(rel, {})
+                              .get("data")))
+            if rows:
+                print("      %d of %d results carried %s" % (
+                    carried, len(rows), rel))
+                if carried:
+                    print("      -> one request per track instead of two")
+
+    print("\n== can an exact ISRC replace the text search? ==")
+    if not isrc:
+        print("  skipped: no ISRC tag found to test with")
+    else:
+        data = call("GET /songs?filter[isrc]=...", songs, {"filter[isrc]": isrc})
+        rows = data.get("data") or []
+        print("      returned %d song(s)" % len(rows))
+        if rows:
+            attrs = rows[0].get("attributes") or {}
+            print("      -> %r by %r" % (attrs.get("name"),
+                                         attrs.get("artistName")))
+            print("      -> exact lookup works, and cannot match the wrong "
+                  "recording the way a text search can")
+
+    print("\n== does a song say whether it has lyrics, without fetching? ==")
+    data = call("GET /songs/{id}?extend=hasTimeSyncedLyrics",
+                "%s/%s" % (songs, ids[0]), {"extend": "hasTimeSyncedLyrics"})
+    attrs = ((data.get("data") or [{}])[0].get("attributes") or {})
+    flags = {k: v for k, v in attrs.items() if "yric" in k}
+    print("      lyric-related attributes: %s" % (flags or "none"))
+    if flags:
+        print("      -> tracks without lyrics could be skipped before the "
+              "second call")
+    return 0
+
+
+def cmd_verify_skip(args, config: Config) -> int:
+    """Check whether Apple's has-synced-lyrics flag can be trusted.
+
+    fetch_synced skips the lyrics request when the catalog search says a
+    track has no synced lyrics. That halves the cost, and rests entirely
+    on the flag being accurate on an anonymous search - which was assumed
+    from one working example, not established. This makes the skipped
+    request anyway and reports whether anything was being lost.
+    """
+    from .backfill import verify_skip_flag
+
+    if not config.apple_token:
+        print("error: no Apple media-user-token configured", file=sys.stderr)
+        return 1
+    check = verify_skip_flag(config, sample=args.sample,
+                             on_detail=lambda text: print(text))
+    print()
+    if not check.flagged_false:
+        print("Apple did not flag any of the %d tracks searched as having no "
+              "synced lyrics, so the skip never fired here and this says "
+              "nothing either way. Try a larger --sample." % check.searched)
+        return 0
+    print("%d of %d tracks searched were flagged 'no synced lyrics'."
+          % (check.flagged_false, check.searched))
+    if not check.flag_is_wrong:
+        print("Every one of them really had none: the flag is trustworthy on "
+              "an anonymous search, and the skip is safe.")
+        return 0
+    print("%d of those %d had lyrics anyway (%.0f%%), %d of them word-by-word."
+          % (check.had_lyrics, check.flagged_false, check.wrong_pct,
+             check.had_word))
+    print("The flag is NOT trustworthy and the skip is losing lyrics. "
+          "It should be removed.")
+    for line in check.wrong_examples:
+        print("    flagged as having none, actually had: %s" % line)
+    return 3
+
+
+def cmd_apple_tokens(args, config: Config) -> int:
+    """Show every developer token the web player offers and which the
+    catalog API accepts.
+
+    The web player ships several JWTs for different Apple services. Only
+    one works against the catalog API, and the others are refused with
+    429 "Request is forbidden" - which reads as a rate limit and is not
+    one. This says plainly which is which, from this machine, so a wrong
+    token and a genuinely limited address can be told apart.
+    """
+    import base64
+    import json
+
+    from . import __version__, apple
+
+    print("beetdrop %s" % __version__)
+    try:
+        candidates = apple._candidate_tokens()
+    except apple.AppleError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    if not candidates:
+        print("no developer token found in the web player at all")
+        return 1
+    print("found %d distinct token(s)\n" % len(candidates))
+
+    working = []
+    for index, token in enumerate(candidates, 1):
+        payload = {}
+        try:
+            middle = token.split(".")[1]
+            middle += "=" * (-len(middle) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(middle))
+        except Exception:
+            pass
+        print("--- token %d of %d ---" % (index, len(candidates)))
+        print("    %s...%s" % (token[:18], token[-8:]))
+        for field in ("iss", "exp", "root_https_origin"):
+            if field in payload:
+                print("    %-18s %s" % (field, payload[field]))
+        ok = apple._token_works(token)
+        print("    catalog search     %s" % ("ACCEPTED" if ok else "refused"))
+        if ok:
+            working.append(index)
+        print()
+
+    if working:
+        print("%d of %d accepted (token %s). Beetdrop will use one of these."
+              % (len(working), len(candidates),
+                 ", ".join(str(i) for i in working)))
+        return 0
+    print("Every token was refused from this machine. Since a token that "
+          "works elsewhere is refused here, this really is the address "
+          "being limited rather than the wrong token being sent.")
+    return 2
 
 
 def cmd_serve(args, config: Config) -> int:
@@ -346,12 +674,25 @@ def main(argv=None) -> int:
                         help="print every track in that bucket, one per line: "
                              "line = has lyrics but no word-by-word, "
                              "broken = word timing that runs backwards mid-line")
+    p_scan.add_argument("--estimate", type=int, nargs="?", const=100,
+                        metavar="N",
+                        help="ask Apple about N random line-level tracks "
+                             "(default 100) and report what share of the "
+                             "library it could serve word-by-word, without "
+                             "writing anything")
+    p_scan.add_argument("--show-matches", action="store_true",
+                        help="with --estimate, print what Apple matched each "
+                             "track to, so a wrong match is visible")
     p_scan.add_argument("--stats", action="store_true",
                         help="report lyric coverage and how much is word-by-word, "
                              "without fetching anything")
     p_scan.add_argument("--upgrade", action="store_true",
                         help="re-fetch tracks whose .lrc has no per-word timing "
                              "and replace it when Apple has a word-level version")
+    p_scan.add_argument("--redo-words", action="store_true",
+                        help="re-fetch every .lrc that already has per-word "
+                             "timing and write it again, to repair sidecars "
+                             "left behind by an older rendering")
     p_scan.set_defaults(func=cmd_scan_lyrics)
 
     p_probe = sub.add_parser(
@@ -373,6 +714,31 @@ def main(argv=None) -> int:
                        help="how much of each body to print (default 2000)")
     p_raw.set_defaults(func=cmd_apple_raw)
 
+    p_explore = sub.add_parser(
+        "apple-explore",
+        help="test whether Apple supports batching, ISRC lookup, or a "
+             "has-lyrics flag, any of which would cut the two calls a track "
+             "currently costs")
+    p_explore.add_argument("--sample", type=int, default=300,
+                           help="how many files to check for ISRC tags "
+                                "(default 300; 0 for the whole library)")
+    p_explore.set_defaults(func=cmd_apple_explore)
+
+    p_verify = sub.add_parser(
+        "verify-skip",
+        help="check whether Apple's has-synced-lyrics flag is accurate, "
+             "since a wrong flag means the lyrics fetch is being skipped "
+             "for tracks that do have lyrics")
+    p_verify.add_argument("--sample", type=int, default=30,
+                          help="how many flagged tracks to verify (default 30)")
+    p_verify.set_defaults(func=cmd_verify_skip)
+
+    p_tokens = sub.add_parser(
+        "apple-tokens",
+        help="list the developer tokens the web player offers and show "
+             "which the catalog API accepts")
+    p_tokens.set_defaults(func=cmd_apple_tokens)
+
     p_serve = sub.add_parser("serve", help="run the web API")
     p_serve.add_argument("--host", default="0.0.0.0")
     p_serve.add_argument("--port", type=int, default=8090)
@@ -382,6 +748,13 @@ def main(argv=None) -> int:
     p_version.set_defaults(func=cmd_version)
 
     args = parser.parse_args(argv)
+    # `docker exec` gives a pipe, not a terminal, and Python block-buffers
+    # to a pipe: a scan's progress lines sit in an 8KB buffer instead of
+    # appearing, so a long command looks hung when it is working fine.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     # The same settings the web UI saves - tokens, provider, word-by-word.
     # Without this the CLI ran on environment variables alone, so
     # scan-lyrics --upgrade found no Apple token and did nothing at all.
