@@ -392,3 +392,23 @@ class TestWhetherTheFileMoves:
                   / "app.js").read_text()
         assert 'v-model="track.move"' in page
         assert "move: track.move" in source
+
+
+class TestCandidateCoverArt:
+    def test_a_candidate_links_its_release_cover(self):
+        described = describe_recording(RECORDING)
+        assert described["artwork"] == (
+            "https://coverartarchive.org/release/rel-1/front-250")
+
+    def test_a_recording_with_no_release_has_no_cover(self):
+        assert describe_recording(dict(RECORDING, releases=[]))["artwork"] == ""
+
+    def test_the_page_hides_art_that_does_not_load(self):
+        # Plenty of releases have no cover in the archive; a broken-image
+        # icon on every candidate would be worse than none.
+        page = (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        source = (Path(__file__).parent.parent / "beetdrop" / "static"
+                  / "app.js").read_text()
+        assert 'error="hideImage"' in page
+        assert "hideImage(event)" in source

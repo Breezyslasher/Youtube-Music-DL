@@ -72,6 +72,9 @@
 
     <template v-if="resultsType === 'lyrics'">
       <article v-for="r in results" :key="r.id" class="card lyriccard">
+        <img v-if="r.artwork" class="thumb" :src="r.artwork" alt=""
+             loading="lazy" @error="hideImage">
+        <div v-else class="thumb thumb-blank"></div>
         <div class="meta">
           <span class="title">{{ r.title }}</span>
           <span class="artist">{{ r.artist }}<template v-if="r.album"> &middot; {{ r.album }}</template></span>
@@ -454,6 +457,8 @@
                   type="button" class="candidate"
                   :disabled="fixingMatch === track.path"
                   @click="applyMatch(track, c)">
+            <img v-if="c.artwork" class="candidateart" :src="c.artwork" alt=""
+                 loading="lazy" @error="hideImage">
             {{ c.artist }} &mdash; {{ c.title }}
             <span class="note">
               {{ c.album }}{{ c.year ? ' (' + c.year + ')' : '' }},

@@ -91,6 +91,7 @@ def describe_recording(recording: dict) -> dict:
     releases = recording.get("releases") or []
     chosen = select_release(releases) or (releases[0] if releases else {})
     millis = recording.get("length") or 0
+    release_mbid = (chosen or {}).get("id") or ""
     return {
         "id": recording.get("id") or "",
         "title": recording.get("title") or "",
@@ -99,6 +100,11 @@ def describe_recording(recording: dict) -> dict:
         "year": _release_date(chosen)[:4] if chosen else "",
         "duration": int(millis / 1000) if millis else 0,
         "release_count": len(releases),
+        # Straight from the Cover Art Archive, loaded by the browser.
+        # Plenty of releases have none, so the page hides what 404s
+        # rather than this checking each one and costing a request.
+        "artwork": ("https://coverartarchive.org/release/%s/front-250"
+                    % release_mbid) if release_mbid else "",
     }
 
 

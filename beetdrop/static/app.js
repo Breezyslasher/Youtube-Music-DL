@@ -121,6 +121,12 @@ createApp({
       this.toastTimer = setTimeout(() => { this.toast = ""; }, 4000);
     },
 
+    hideImage(event) {
+      // Plenty of releases have no cover in the archive, and Apple's art
+      // occasionally 404s too. A broken-image icon is worse than none.
+      if (event && event.target) event.target.style.display = "none";
+    },
+
     fmtDuration(seconds) {
       if (seconds == null) return "?:??";
       const m = Math.floor(seconds / 60);
