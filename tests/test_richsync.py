@@ -346,3 +346,56 @@ class TestTheEndpointItselfMayNotExist:
         assert any("api.musixmatch.com" in u for u in urls)
         assert all(p.get("track_id") == "7"
                    for _, p in mxm.richsync_attempts("t", 7))
+
+
+# The exact body apic-desktop returned for every query on a real
+# account, shortened. Ten sidecars of this reached a library.
+JUNK = ("[00:12.00]Wob gopini den\n[00:16.00]Tefe woxica fero\n"
+        "[00:20.00]Nuve tapili som\n[00:24.00]Bexa dorumi vel\n")
+
+
+class TestTheLineLevelSourceChecksTheTrack:
+    """apic-desktop answered "Imagine Dragons - Underdog" with Drake -
+    NOKIA and 5,457 characters of invented words - the same body for
+    every query. fetch_synced took whatever came back, and only the
+    uniform-timing placeholder guard stopped it reaching the library.
+    That guard is a last line of defence; this is the first."""
+
+    def _macro(self, artist, title, body=JUNK):
+        return {"message": {"body": {"macro_calls": {
+            "matcher.track.get": {"message": {"body": {"track": {
+                "track_id": 226291677, "has_richsync": 1,
+                "track_name": title, "artist_name": artist}}}},
+            "track.subtitles.get": {"message": {"body": {"subtitle_list": [
+                {"subtitle": {"subtitle_body": body}}]}}}}}}}
+
+    def test_an_unrelated_track_yields_nothing(self, monkeypatch):
+        monkeypatch.setattr(mxm.requests, "get", lambda *a, **k:
+                            _response(self._macro("Drake", "NOKIA")))
+        assert mxm.fetch_synced("t", "Imagine Dragons", "Underdog") is None
+
+    def test_the_right_track_is_still_returned(self, monkeypatch):
+        good = "[00:11.20]Thought I found a way\n[00:14.05]Thought I found\n"
+        monkeypatch.setattr(mxm.requests, "get", lambda *a, **k: _response(
+            self._macro("Imagine Dragons", "Underdog", good)))
+        assert mxm.fetch_synced("t", "Imagine Dragons", "Underdog") == good.strip()
+
+    def test_a_response_with_no_track_object_is_still_accepted(self, monkeypatch):
+        # Only a real disagreement rejects; a shape without a track to
+        # compare is not evidence of a wrong one.
+        payload = {"message": {"body": {"subtitle_list": [
+            {"subtitle": {"subtitle_body": "[00:01.00]real words\n"}}]}}}
+        monkeypatch.setattr(mxm.requests, "get",
+                            lambda *a, **k: _response(payload))
+        assert mxm.fetch_synced("t", "A", "S") == "[00:01.00]real words"
+
+    def test_every_attempt_carries_the_names_to_check_against(self,
+                                                              monkeypatch):
+        # The duration-filtered retries must not bypass the check.
+        seen = []
+        monkeypatch.setattr(mxm, "_query",
+                            lambda params, artist="", title="":
+                            seen.append((artist, title)) or None)
+        mxm.fetch_synced("t", "Imagine Dragons", "Underdog", 200)
+        assert seen and all(pair == ("Imagine Dragons", "Underdog")
+                            for pair in seen)
