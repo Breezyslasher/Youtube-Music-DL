@@ -555,8 +555,27 @@ def search_catalog(developer_token: str, storefront: str, term: str,
         return []
 
 
+def artwork_url(attributes, size: int = 160) -> str:
+    """Apple's cover art at a size we choose.
+
+    The url comes with {w} and {h} placeholders for the caller to fill,
+    so it is a template rather than a link until they are replaced.
+    """
+    template = ((attributes or {}).get("artwork") or {}).get("url") or ""
+    if not template:
+        return ""
+    return (template.replace("{w}", str(int(size)))
+            .replace("{h}", str(int(size)))
+            .replace("{f}", "jpg"))
+
+
 def describe_song(song) -> dict:
-    """A catalog row reduced to what a person needs to judge it by."""
+    """A catalog row reduced to what a person needs to judge it by.
+
+    Cover art included: two rows with the same title and artist are
+    often the single and the album, and the sleeve says which faster
+    than reading the album name does.
+    """
     attributes = (song or {}).get("attributes") or {}
     millis = attributes.get("durationInMillis") or 0
     return {
@@ -566,6 +585,7 @@ def describe_song(song) -> dict:
         "album": attributes.get("albumName") or "",
         "year": (attributes.get("releaseDate") or "")[:4],
         "duration": int(millis / 1000) if millis else 0,
+        "artwork": artwork_url(attributes),
     }
 
 

@@ -1398,3 +1398,30 @@ class TestQueryIsRetriedSimplified:
             apple.fetch_synced("mut", "Jonathan Young",
                                "MONSTER MASH (Pop Punk cover)", 200)
         assert refused.value.candidates[0]["title"] == "Something Else"
+
+
+class TestCoverArt:
+    """Two rows with the same title and artist are often the single and
+    the album, and the sleeve says which faster than the album name."""
+
+    ROW = {"id": "1", "attributes": {
+        "name": "9 to 5", "artistName": "Dolly Parton",
+        "artwork": {"url": "https://is1.mzstatic.com/a/{w}x{h}bb.{f}",
+                    "width": 3000, "height": 3000}}}
+
+    def test_the_size_placeholders_are_filled_in(self):
+        assert apple.artwork_url(self.ROW["attributes"], 160) == (
+            "https://is1.mzstatic.com/a/160x160bb.jpg")
+
+    def test_a_row_with_no_artwork_yields_no_url(self):
+        assert apple.artwork_url({}) == ""
+        assert apple.artwork_url({"artwork": {}}) == ""
+        assert apple.artwork_url(None) == ""
+
+    def test_a_described_song_carries_it(self):
+        assert apple.describe_song(self.ROW)["artwork"].endswith("bb.jpg")
+
+    def test_a_song_without_artwork_still_describes(self):
+        described = apple.describe_song({"id": "2", "attributes": {
+            "name": "x", "artistName": "y"}})
+        assert described["artwork"] == "" and described["title"] == "x"

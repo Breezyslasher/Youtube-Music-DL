@@ -113,6 +113,10 @@ class MatchChoice(BaseModel):
     recording_id: str
     title: str = ""      # what to search MusicBrainz with
     artist: str = ""
+    # A wrong match means a wrong folder too, since the path was built
+    # from the same tags - so the file moves by default. False re-tags it
+    # where it stands, for a library whose layout is not Beetdrop's.
+    move: bool = True
 
 
 SESSION_COOKIE = "beetdrop_session"
@@ -800,7 +804,8 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
 
         def run():
             return apply_choice(config, get_mb_client(config), track,
-                                body.recording_id, body.title, body.artist)
+                                body.recording_id, body.title, body.artist,
+                                move=body.move)
 
         try:
             outcome = await asyncio.to_thread(run)
@@ -810,10 +815,12 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return {"ok": True, "path": str(outcome.new_path),
+        moved = outcome.new_path != outcome.old_path
+        return {"ok": True, "path": str(outcome.new_path), "moved": moved,
                 "moved_lyrics": outcome.moved_lyrics,
-                "detail": "filed as %s - %s" % (outcome.tags.artist,
-                                                outcome.tags.title)}
+                "detail": "%s as %s - %s" % (
+                    "filed" if moved else "re-tagged in place",
+                    outcome.tags.artist, outcome.tags.title)}
 
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False,

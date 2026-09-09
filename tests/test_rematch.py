@@ -335,3 +335,80 @@ class TestFindingAConfidentlyWrongMatch:
                   / "app.js").read_text()
         assert 'click="searchLibrary"' in page
         assert "searchLibrary()" in source and "/api/match/tracks?q=" in source
+
+
+@pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
+class TestWhetherTheFileMoves:
+    """A wrong match is not only wrong tags - the folder and filename were
+    built from them too - so the file moves by default. A library whose
+    layout is not Beetdrop's can say no."""
+
+    def _config(self, tmp_path):
+        music = tmp_path / "music"
+        music.mkdir()
+        return Config(music_root=music, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def _filed(self, config):
+        # Already in the library, under the wrong artist and album.
+        track = (config.music_root / "Wrong Band" / "Wrong Album (1999)"
+                 / "01 - Wrong Song.opus")
+        make_opus(track)
+        write_full_tags(track, FullTags(title="Wrong Song", artist="Wrong Band",
+                                        album_artist="Wrong Band",
+                                        album="Wrong Album"))
+        return track
+
+    def test_by_default_it_moves_out_of_the_wrong_folder(self, tmp_path):
+        config = self._config(tmp_path)
+        track = self._filed(config)
+        outcome = apply_choice(config, FakeMB(), track, "rec-1",
+                               "Wrong Song", "Wrong Band")
+        assert outcome.new_path.parent.name == "9 to 5 and Odd Jobs (1980)"
+        assert not track.exists()
+
+    def test_move_false_corrects_the_tags_where_it_stands(self, tmp_path):
+        config = self._config(tmp_path)
+        track = self._filed(config)
+        outcome = apply_choice(config, FakeMB(), track, "rec-1",
+                               "Wrong Song", "Wrong Band", move=False)
+        assert outcome.new_path == track and track.is_file()
+        artist, title, _album, _d = read_track_meta(track)
+        assert title == "9 to 5" and artist == "Dolly Parton"
+
+    def test_not_moving_leaves_the_lyrics_alone(self, tmp_path):
+        config = self._config(tmp_path)
+        track = self._filed(config)
+        track.with_suffix(".lrc").write_text("[00:01.00]words")
+        outcome = apply_choice(config, FakeMB(), track, "rec-1",
+                               "Wrong Song", "Wrong Band", move=False)
+        assert not outcome.moved_lyrics
+        assert track.with_suffix(".lrc").is_file()
+
+    def test_the_page_offers_the_choice(self):
+        page = (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        source = (Path(__file__).parent.parent / "beetdrop" / "static"
+                  / "app.js").read_text()
+        assert 'v-model="track.move"' in page
+        assert "move: track.move" in source
+
+
+class TestCandidateCoverArt:
+    def test_a_candidate_links_its_release_cover(self):
+        described = describe_recording(RECORDING)
+        assert described["artwork"] == (
+            "https://coverartarchive.org/release/rel-1/front-250")
+
+    def test_a_recording_with_no_release_has_no_cover(self):
+        assert describe_recording(dict(RECORDING, releases=[]))["artwork"] == ""
+
+    def test_the_page_hides_art_that_does_not_load(self):
+        # Plenty of releases have no cover in the archive; a broken-image
+        # icon on every candidate would be worse than none.
+        page = (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        source = (Path(__file__).parent.parent / "beetdrop" / "static"
+                  / "app.js").read_text()
+        assert 'error="hideImage"' in page
+        assert "hideImage(event)" in source
