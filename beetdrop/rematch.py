@@ -1,0 +1,244 @@
+"""Correct a track that was matched to the wrong recording.
+
+Matching is duration-first text similarity with no acoustic
+fingerprinting, so a cover, a re-upload or a same-length different song
+can get through - and anything it could not verify at all is filed under
+_review/ with tags taken from YouTube. Both leave a file on disk whose
+tags are wrong and which nothing else will ever revisit.
+
+This lets a person say what the track actually is. It searches
+MusicBrainz, describes the candidates so they can be told apart, and on
+a choice re-tags the file and moves it to where those tags say it
+belongs - out of _review/ and into the library proper, in the usual
+case.
+
+Nothing here guesses. Matching already had its turn; a person picking is
+the whole point, so the candidates are shown as MusicBrainz returned
+them rather than filtered by the checks that got it wrong.
+"""
+
+from __future__ import annotations
+
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from .config import Config
+from .fulltags import FullTags, write_full_tags
+from .library import (
+    REVIEW_DIR,
+    _flatten_media,
+    _release_date,
+    _tags_from_release_track,
+    album_dir,
+    place_file,
+    track_filename,
+)
+from .matching import credit_ids, credit_name, select_release
+
+AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
+
+
+def iter_unverified(root: Path):
+    """Audio filed under _review/ - the grabs nothing could verify."""
+    review = root / REVIEW_DIR
+    if not review.is_dir():
+        return
+    for path in sorted(review.rglob("*")):
+        if path.is_file() and path.suffix.lower() in AUDIO_EXTS:
+            yield path
+
+
+def search_library(root: Path, query: str, limit: int = 50) -> list:
+    """Library files whose path contains this text.
+
+    _review/ only holds what matching *knew* it could not verify. A match
+    that was confidently wrong - a cover, a re-upload, the other band
+    with a similar name - is filed into the library proper as verified,
+    with wrong tags and a wrong folder, and nothing ever revisits it.
+    Those are found by searching for what they are wrongly called, which
+    is what a person sees in their player.
+
+    The match is on the path rather than the tags because the path is
+    built from the same wrong tags and costs nothing to read.
+    """
+    needles = [word for word in query.lower().split() if word]
+    if not needles:
+        return []
+    found = []
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        try:
+            haystack = str(path.relative_to(root)).lower()
+        except ValueError:
+            haystack = path.name.lower()
+        if all(word in haystack for word in needles):
+            found.append(path)
+            if len(found) >= max(1, min(limit, 200)):
+                break
+    return found
+
+
+def describe_recording(recording: dict) -> dict:
+    """One candidate reduced to what a person needs to tell it apart.
+
+    The release matters as much as the recording: two entries with the
+    same title and artist are usually the studio cut and a live or
+    compilation version, and only the release name says which.
+    """
+    releases = recording.get("releases") or []
+    chosen = select_release(releases) or (releases[0] if releases else {})
+    millis = recording.get("length") or 0
+    return {
+        "id": recording.get("id") or "",
+        "title": recording.get("title") or "",
+        "artist": credit_name(recording.get("artist-credit")) or "",
+        "album": chosen.get("title", "") if chosen else "",
+        "year": _release_date(chosen)[:4] if chosen else "",
+        "duration": int(millis / 1000) if millis else 0,
+        "release_count": len(releases),
+    }
+
+
+def search_candidates(mb, title: str, artist: str, limit: int = 10) -> list:
+    """What MusicBrainz has for this text, unfiltered.
+
+    Deliberately not scored or rejected: the automatic checks are what
+    produced the wrong answer, so applying them again would hide the
+    right one.
+    """
+    if not title.strip():
+        return []
+    found = mb.search_recordings(title.strip(), artist.strip(), limit=limit)
+    return [describe_recording(row) for row in found]
+
+
+def _tags_for(mb, recording: dict, fallback_title: str,
+              fallback_artist: str) -> tuple:
+    """(tags, release) for a recording a person chose."""
+    chosen = select_release(recording.get("releases") or [])
+    if chosen is None:
+        return FullTags(
+            title=recording.get("title") or fallback_title,
+            artist=credit_name(recording.get("artist-credit")) or fallback_artist,
+            album_artist=credit_name(recording.get("artist-credit")) or fallback_artist,
+            album=recording.get("title") or fallback_title,
+            recording_mbid=recording.get("id", ""),
+            artist_mbids=credit_ids(recording.get("artist-credit")),
+            unverified=False,
+        ), None
+
+    release = mb.get_release(chosen["id"])
+    for entry in _flatten_media(release):
+        if (entry["track"].get("recording") or {}).get("id") == recording.get("id"):
+            return _tags_from_release_track(
+                release, entry, fallback_title, fallback_artist), release
+    # The recording is not on the release MusicBrainz just handed back -
+    # its data drifts. Keep the identity and lose only the numbering.
+    return FullTags(
+        title=recording.get("title") or fallback_title,
+        artist=credit_name(recording.get("artist-credit")) or fallback_artist,
+        album_artist=credit_name(release.get("artist-credit")) or fallback_artist,
+        album=release.get("title", ""),
+        date=_release_date(release),
+        recording_mbid=recording.get("id", ""),
+        release_mbid=release.get("id", ""),
+        release_group_mbid=(release.get("release-group") or {}).get("id", ""),
+        artist_mbids=credit_ids(recording.get("artist-credit")),
+        unverified=False,
+    ), release
+
+
+@dataclass
+class Rematch:
+    old_path: Path
+    new_path: Path
+    tags: FullTags
+    moved_lyrics: bool = False
+
+
+def _find_recording(mb, recording_id: str, title: str, artist: str) -> Optional[dict]:
+    """The chosen recording, from the same search that offered it.
+
+    Re-running the search rather than looking the id up directly keeps
+    this to endpoints the client already has, and the response is cached
+    from moments ago when a person was reading it.
+    """
+    for row in mb.search_recordings(title.strip(), artist.strip(), limit=25):
+        if row.get("id") == recording_id:
+            return row
+    return None
+
+
+def apply_choice(config: Config, mb, path: Path, recording_id: str,
+                 title: str, artist: str) -> Rematch:
+    """Re-tag this file as the chosen recording and file it accordingly.
+
+    The .lrc beside it moves too. Lyrics are matched to the audio, not to
+    the tags, so they are still right - and leaving them behind would
+    strand them next to nothing.
+    """
+    if not path.is_file():
+        raise FileNotFoundError("that file is gone")
+    recording = _find_recording(mb, recording_id, title, artist)
+    if recording is None:
+        raise LookupError("MusicBrainz no longer offers that recording")
+
+    tags, _release = _tags_for(mb, recording, title, artist)
+    destination = (album_dir(config.music_root, tags)
+                   / track_filename(tags, path.suffix.lstrip(".")))
+    if destination.resolve() == path.resolve():
+        # Already where it belongs; just correct the tags in place.
+        write_full_tags(path, tags)
+        return Rematch(old_path=path, new_path=path, tags=tags)
+
+    final = place_file(path, destination)
+    try:
+        write_full_tags(final, tags)
+    except Exception:
+        # The copy is the risky half and it succeeded; a tag write that
+        # did not must not leave two files behind.
+        final.unlink(missing_ok=True)
+        raise
+
+    sidecar = path.with_suffix(".lrc")
+    moved = False
+    if sidecar.is_file():
+        try:
+            shutil.copyfile(sidecar, final.with_suffix(".lrc"))
+            sidecar.unlink()
+            moved = True
+        except OSError:
+            moved = False
+    path.unlink(missing_ok=True)
+    _prune_empty(path.parent, config.music_root)
+    return Rematch(old_path=path, new_path=final, tags=tags, moved_lyrics=moved)
+
+
+def _prune_empty(directory: Path, root: Path) -> None:
+    """Remove the folder a rematched track left behind, and its parents.
+
+    A _review/ entry is one folder per track, so moving the file out
+    leaves an empty one every time. Stops at the library root and at the
+    first folder that still holds something.
+    """
+    try:
+        root = root.resolve()
+        current = directory.resolve()
+    except OSError:
+        return
+    while current != root and root in current.parents:
+        try:
+            # A stray cover.jpg is not a reason to keep an empty folder.
+            leftovers = [item for item in current.iterdir()
+                         if item.name not in ("cover.jpg", "cover.png")]
+            if leftovers:
+                return
+            for item in current.iterdir():
+                item.unlink()
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent

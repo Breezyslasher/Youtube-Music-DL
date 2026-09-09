@@ -408,6 +408,65 @@
           on the next scan.
         </p>
       </details>
+      <h3>Wrong match</h3>
+      <p class="note">
+        Say what a track really is: Beetdrop re-tags it from MusicBrainz and
+        moves it to where those tags say it belongs. The .lrc beside it
+        comes too.
+      </p>
+      <p class="note">
+        Two kinds go wrong. Grabs that could not be verified are filed under
+        _review/ with tags taken from YouTube. A grab that matched the
+        <em>wrong</em> song confidently - a cover, a re-upload, the other
+        band with a similar name - is filed as verified and looks settled,
+        so search for whatever it is wrongly called in your player.
+      </p>
+      <div class="searchrow">
+        <input type="search" v-model="libraryQuery"
+               @keyup.enter="searchLibrary"
+               placeholder="find a track in your library...">
+        <button type="button" @click="searchLibrary"
+                :disabled="loadingUnverified || !libraryQuery.trim()">Find</button>
+      </div>
+      <button type="button" @click="loadUnverified" :disabled="loadingUnverified">
+        {{ loadingUnverified ? 'Listing...' : 'Show unverified grabs (_review)' }}
+      </button>
+      <details v-if="unverified.length" class="joblog" open>
+        <summary>{{ unverifiedTotal }} track(s) to fix</summary>
+        <div v-for="track in unverified" :key="track.path" class="review">
+          <p class="review-track">
+            <strong>{{ track.artist || '?' }} &mdash; {{ track.title || track.name }}</strong>
+            <span class="note" v-if="track.duration"> ({{ fmtDuration(track.duration) }})</span>
+          </p>
+          <p class="note">{{ track.album ? track.album + ' / ' : '' }}{{ track.name }}</p>
+          <input type="search" v-model="track.queryArtist" placeholder="artist">
+          <input type="search" v-model="track.query" placeholder="song title"
+                 @keyup.enter="findMatches(track)">
+          <button type="button" :disabled="track.searching"
+                  @click="findMatches(track)">
+            {{ track.searching ? 'Looking...' : 'Find on MusicBrainz' }}
+          </button>
+          <button v-for="c in (track.candidates || [])" :key="c.id"
+                  type="button" class="candidate"
+                  :disabled="fixingMatch === track.path"
+                  @click="applyMatch(track, c)">
+            {{ c.artist }} &mdash; {{ c.title }}
+            <span class="note">
+              {{ c.album }}{{ c.year ? ' (' + c.year + ')' : '' }},
+              {{ fmtDuration(c.duration) }}<template v-if="c.release_count > 1">
+              &mdash; on {{ c.release_count }} releases</template>
+            </span>
+          </button>
+          <p class="note" v-if="track.candidates && !track.candidates.length">
+            Nothing found. Try just the song title, or check the artist.
+          </p>
+        </div>
+        <p class="note" v-if="unverifiedTotal > unverified.length">
+          Showing the first {{ unverified.length }} of {{ unverifiedTotal }}.
+        </p>
+      </details>
+
+      <h3>Lyrics</h3>
       <button type="button" @click="loadUnmatched" :disabled="loadingUnmatched">
         {{ loadingUnmatched ? 'Listing...' : 'Find lyrics by hand' }}
       </button>

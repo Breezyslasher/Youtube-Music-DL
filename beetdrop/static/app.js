@@ -31,6 +31,11 @@ createApp({
       unmatchedTotal: 0,
       loadingUnmatched: false,
       lyricsWordByWord: true,
+      unverified: [],
+      unverifiedTotal: 0,
+      loadingUnverified: false,
+      fixingMatch: "",
+      libraryQuery: "",
       testingApple: false,
       appleStatus: "",
       appleOk: false,
@@ -471,6 +476,91 @@ createApp({
         }
       } finally {
         this.decidingReview = "";
+      }
+    },
+
+    async loadUnverified() {
+      this.loadingUnverified = true;
+      try {
+        const body = await this.api("/api/match/unverified?limit=100");
+        this.unverified = this._asFixable(body.tracks);
+        this.unverifiedTotal = body.total || 0;
+        if (!this.unverified.length) this.showToast("Nothing in _review");
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not list them: " + err.message);
+        }
+      } finally {
+        this.loadingUnverified = false;
+      }
+    },
+
+    _asFixable(tracks) {
+      return (tracks || []).map((track) => Object.assign({}, track, {
+        query: track.title || track.name.replace(/\.[^.]+$/, ""),
+        queryArtist: track.artist || "",
+        candidates: null,
+        searching: false,
+      }));
+    },
+
+    async searchLibrary() {
+      if (!this.libraryQuery.trim()) return;
+      this.loadingUnverified = true;
+      try {
+        const body = await this.api(
+          "/api/match/tracks?q=" + encodeURIComponent(this.libraryQuery));
+        this.unverified = this._asFixable(body.tracks);
+        this.unverifiedTotal = body.total || 0;
+        if (!this.unverified.length) this.showToast("No track matched that");
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Search failed: " + err.message);
+        }
+      } finally {
+        this.loadingUnverified = false;
+      }
+    },
+
+    async findMatches(track) {
+      if (!track.query.trim()) return;
+      track.searching = true;
+      try {
+        const body = await this.api(
+          "/api/match/candidates?title=" + encodeURIComponent(track.query)
+          + "&artist=" + encodeURIComponent(track.queryArtist));
+        track.candidates = body.candidates || [];
+        if (!track.candidates.length) {
+          this.showToast("MusicBrainz returned nothing for that");
+        }
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Lookup failed: " + err.message);
+        }
+      } finally {
+        track.searching = false;
+      }
+    },
+
+    async applyMatch(track, candidate) {
+      this.fixingMatch = track.path;
+      try {
+        const body = await this.api("/api/match/apply", {
+          method: "POST",
+          body: JSON.stringify({
+            path: track.path, recording_id: candidate.id,
+            title: track.query, artist: track.queryArtist,
+          }),
+        });
+        this.showToast(body.detail || "filed");
+        this.unverified = this.unverified.filter((t) => t.path !== track.path);
+        this.unverifiedTotal = Math.max(0, this.unverifiedTotal - 1);
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not file it: " + err.message);
+        }
+      } finally {
+        this.fixingMatch = "";
       }
     },
 

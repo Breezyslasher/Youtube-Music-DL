@@ -101,6 +101,20 @@ class ReviewChoice(BaseModel):
     song_id: str = ""    # "" means leave this track alone
 
 
+class MatchChoice(BaseModel):
+    """A recording picked by hand for a track that matched wrong.
+
+    Module level on purpose: `from __future__ import annotations` makes
+    every annotation a string, and FastAPI resolves those against module
+    globals. Declared inside create_app it was invisible, and the
+    endpoint took `body` as a query parameter and rejected every request.
+    """
+    path: str
+    recording_id: str
+    title: str = ""      # what to search MusicBrainz with
+    artist: str = ""
+
+
 SESSION_COOKIE = "beetdrop_session"
 
 
@@ -686,6 +700,120 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
         return Response(
             content=lrc, media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="%s"' % safe})
+
+    @app.get("/api/match/unverified", dependencies=[protected])
+    async def api_match_unverified(limit: int = 100):
+        """Grabs filed under _review/ - the ones nothing could verify.
+
+        Every one has tags taken from YouTube rather than MusicBrainz,
+        and nothing revisits them, so without this they stay wrong.
+        """
+        from .backfill import read_track_meta
+        from .rematch import iter_unverified
+
+        config = effective_config()
+
+        def collect():
+            found, seen = [], 0
+            for path in iter_unverified(config.music_root):
+                seen += 1
+                if len(found) >= max(1, min(limit, 500)):
+                    continue
+                artist, title, album, duration = (
+                    read_track_meta(path) or ("", "", "", None))
+                found.append({"path": str(path), "name": path.name,
+                              "artist": artist, "title": title,
+                              "album": album, "duration": int(duration or 0)})
+            return found, seen
+
+        tracks, total = await asyncio.to_thread(collect)
+        return {"tracks": tracks, "total": total}
+
+    @app.get("/api/match/tracks", dependencies=[protected])
+    async def api_match_tracks(q: str, limit: int = 50):
+        """Any track in the library, found by what it is called now.
+
+        _review/ only holds what matching knew it could not verify. A
+        match that was confidently wrong is filed as verified and looks
+        settled, so it has to be reachable by searching for the wrong
+        name - which is the one showing in the player.
+        """
+        from .backfill import read_track_meta
+        from .rematch import search_library
+
+        config = effective_config()
+
+        def collect():
+            rows = []
+            for path in search_library(config.music_root, q, limit=limit):
+                artist, title, album, duration = (
+                    read_track_meta(path) or ("", "", "", None))
+                rows.append({"path": str(path), "name": path.name,
+                             "artist": artist, "title": title, "album": album,
+                             "duration": int(duration or 0)})
+            return rows
+
+        tracks = await asyncio.to_thread(collect)
+        return {"tracks": tracks, "total": len(tracks)}
+
+    @app.get("/api/match/candidates", dependencies=[protected])
+    async def api_match_candidates(title: str, artist: str = "",
+                                   limit: int = 10):
+        """What MusicBrainz has for this text, unscored.
+
+        The automatic checks are what produced the wrong answer, so
+        applying them again here would hide the right one.
+        """
+        from .grab import get_mb_client
+        from .rematch import search_candidates
+
+        if not title.strip():
+            return {"candidates": []}
+        config = effective_config()
+
+        def run():
+            return search_candidates(get_mb_client(config), title, artist,
+                                     limit=max(1, min(limit, 25)))
+
+        try:
+            return {"candidates": await asyncio.to_thread(run)}
+        except Exception as exc:
+            raise HTTPException(status_code=502,
+                                detail="MusicBrainz: %s" % exc) from exc
+
+    @app.post("/api/match/apply", dependencies=[protected])
+    async def api_match_apply(body: MatchChoice):
+        """Re-tag a file as the chosen recording and file it properly."""
+        from .grab import get_mb_client
+        from .rematch import apply_choice
+
+        config = effective_config()
+        track = Path(body.path)
+        # The path comes over HTTP, so it is held to the library.
+        try:
+            inside = track.resolve().is_relative_to(config.music_root.resolve())
+        except OSError:
+            inside = False
+        if not inside:
+            raise HTTPException(status_code=400,
+                                detail="that path is not in the library")
+
+        def run():
+            return apply_choice(config, get_mb_client(config), track,
+                                body.recording_id, body.title, body.artist)
+
+        try:
+            outcome = await asyncio.to_thread(run)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"ok": True, "path": str(outcome.new_path),
+                "moved_lyrics": outcome.moved_lyrics,
+                "detail": "filed as %s - %s" % (outcome.tags.artist,
+                                                outcome.tags.title)}
 
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False,
