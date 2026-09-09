@@ -725,6 +725,15 @@ def backfill_lyrics(
                         no_match += 1
                 else:
                     no_match += 1
+                    # An upgrade or re-render that keeps the old file says
+                    # nothing about why. "Apple has no word timing for this"
+                    # is nobody's fault; "every candidate was refused" is a
+                    # decision a person can overrule, and on a re-render it
+                    # is the difference between a repaired sidecar and one
+                    # quietly left spoiled. Queue it, as the fetch pass does.
+                    if refused and store is not None:
+                        store.add_review(str(path), artist, title,
+                                         int(duration or 0), refused[:8])
             elif lrc:
                 try:
                     write_lyrics_sidecar(path, lrc)
