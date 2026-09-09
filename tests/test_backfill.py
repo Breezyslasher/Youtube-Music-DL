@@ -1240,6 +1240,54 @@ class TestRefusedMatchesAreQueuedForReview:
         result, _ = self._run(tmp_path, monkeypatch, [{"id": "1"}], store=None)
         assert result.no_match == 1
 
+    def _run_redo(self, tmp_path, monkeypatch, candidates, store, answer=None):
+        """A re-render pass over a track that already has a word-level
+        sidecar, where matching refuses everything Apple offers."""
+        config, track = self._config(tmp_path)
+        track.with_suffix(".lrc").write_text(WORD_LRC)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def fake(*a, **k):
+            if candidates and k.get("on_candidates"):
+                k["on_candidates"](candidates)
+            return answer
+
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        return backfill_lyrics(config, redo_words=True, store=store), track
+
+    def test_a_re_render_that_kept_the_old_file_is_queued_too(self, tmp_path,
+                                                              monkeypatch):
+        # The pass leaves the sidecar alone and reports it under "left as
+        # they were", which does not say whether Apple had nothing or we
+        # refused what it had. On a repair pass that is the difference
+        # between a fixed file and one still spoiled.
+        store = Store(tmp_path / "db.sqlite3")
+        refused = [{"id": "1", "title": "Song (Live)", "artist": "A",
+                    "reason": "a different performance"}]
+        result, track = self._run_redo(tmp_path, monkeypatch, refused, store)
+        assert result.upgraded == 0 and result.no_match == 1
+        assert track.with_suffix(".lrc").read_text() == WORD_LRC
+        assert store.count_reviews() == 1
+        assert store.list_reviews()[0]["path"] == str(track)
+
+    def test_no_word_version_is_not_a_refusal(self, tmp_path, monkeypatch):
+        # Apple matched the track and simply has no word timing for it.
+        # Nobody can overrule that, so it must not join the queue.
+        store = Store(tmp_path / "db.sqlite3")
+        result, _ = self._run_redo(tmp_path, monkeypatch, None, store,
+                                   answer=LINE_LRC)
+        assert result.no_match == 1
+        assert store.count_reviews() == 0
+
+    def test_a_successful_re_render_queues_nothing(self, tmp_path, monkeypatch):
+        store = Store(tmp_path / "db.sqlite3")
+        result, track = self._run_redo(tmp_path, monkeypatch, None, store,
+                                       answer=WORD_LRC)
+        assert result.upgraded == 1
+        assert store.count_reviews() == 0
+
 
 class TestAChoiceOutranksMatching:
     """A decision is durable on purpose: a rescan must never quietly undo
