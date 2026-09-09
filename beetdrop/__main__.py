@@ -535,6 +535,63 @@ def cmd_apple_explore(args, config: Config) -> int:
     return 0
 
 
+def cmd_richsync_probe(args, config: Config) -> int:
+    """Is Musixmatch worth adding as a second word-by-word source?
+
+    Apple is the only one today, so the question is not whether
+    Musixmatch has word timing - it does, in its richsync tier - but how
+    much of the part Apple already fails on it can cover. Measured on a
+    sample before any of it is built, the way the Apple estimate was.
+    """
+    from .backfill import estimate_richsync_coverage
+
+    est = estimate_richsync_coverage(config, sample=args.sample,
+                                     verify=args.verify,
+                                     on_detail=lambda text: print(text))
+    print()
+    if not est.population:
+        print("nothing to measure: every track already has word timing")
+        return 0
+    if not est.checked:
+        if not (est.deferred or est.skipped):
+            # Never got as far as asking - the reason is already printed.
+            print("Nothing was asked of Musixmatch; see the message above.")
+        else:
+            print("Musixmatch answered for none of the sample (%d deferred, "
+                  "%d had no usable tags)" % (est.deferred, est.skipped))
+        return 2
+
+    print("Of %d tracks with no word timing, %d were sampled." % (
+        est.population, est.checked))
+    print("  Musixmatch matched:      %d (%.0f%%)" % (est.matched, est.match_pct))
+    print("  of those, has richsync:  %d (%.0f%%)" % (est.claimed, est.pct))
+    print("  share of everything asked: %.0f%% +/- %.0f" % (
+        est.pct_of_all, est.margin))
+    print("  projected across all %d: about %d tracks" % (
+        est.population, est.projected))
+    if est.deferred:
+        print("  (%d deferred, excluded from the figures)" % est.deferred)
+
+    if not est.fetched:
+        print("\nNothing was flagged as covered, so the flag was never tested.")
+    else:
+        print("\nThe has_richsync flag was checked for real on %d of them: %d "
+              "returned word timing (%.0f%%)." % (
+                  est.fetched, est.verified, est.flag_pct))
+        if est.verified < est.fetched:
+            print("A flag that is wrong is worse than no flag - treat the "
+                  "projection above as an upper bound.")
+    if est.samples:
+        print("\nWhat came back, to check the timing by eye:")
+        for text in est.samples[:args.verify]:
+            print("\n  " + text.replace("\n", "\n  "))
+    if args.show_matches and est.matched_examples:
+        print("\nWhat Musixmatch matched each track to:")
+        for line in est.matched_examples:
+            print("  " + line)
+    return 0
+
+
 def cmd_verify_skip(args, config: Config) -> int:
     """Check whether Apple's has-synced-lyrics flag can be trusted.
 
@@ -732,6 +789,21 @@ def main(argv=None) -> int:
     p_verify.add_argument("--sample", type=int, default=30,
                           help="how many flagged tracks to verify (default 30)")
     p_verify.set_defaults(func=cmd_verify_skip)
+
+    p_rich = sub.add_parser(
+        "richsync-probe",
+        help="measure how much of the library Musixmatch could serve "
+             "word-by-word, on the tracks Apple has already failed on")
+    p_rich.add_argument("--sample", type=int, default=100,
+                        help="how many tracks to ask about (0 = all, "
+                             "default 100)")
+    p_rich.add_argument("--verify", type=int, default=5,
+                        help="how many of the tracks flagged as covered to "
+                             "actually fetch and render (default 5)")
+    p_rich.add_argument("--show-matches", action="store_true",
+                        help="print what Musixmatch matched each track to, "
+                             "so a wrong match is visible")
+    p_rich.set_defaults(func=cmd_richsync_probe)
 
     p_tokens = sub.add_parser(
         "apple-tokens",

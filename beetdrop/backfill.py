@@ -196,6 +196,160 @@ def estimate_word_coverage(config: Config, sample: int = 100,
 
 
 @dataclass
+class RichsyncEstimate:
+    """Whether Musixmatch is worth adding as a second word-by-word source.
+
+    Apple is the only one today, so every track it cannot serve is simply
+    without word timing. Musixmatch has a word-level tier of its own -
+    richsync - and the question is not whether it exists but how much of
+    *this* library it covers, and specifically how much of the part Apple
+    already fails on. A source that only duplicates Apple is worth
+    nothing.
+
+    has_richsync is a flag on the match, and the last flag taken on trust
+    was wrong 9 times in 17, so a sample of the tracks it claims are
+    covered is fetched for real and rendered.
+    """
+    population: int = 0     # tracks with no word timing today
+    checked: int = 0        # tracks we got as far as asking about
+    matched: int = 0        # of those, ones Musixmatch recognised
+    claimed: int = 0        # of the matches, ones flagged has_richsync
+    verified: int = 0       # of those fetched, ones that really returned words
+    fetched: int = 0        # how many claims were actually tested
+    deferred: int = 0       # rate-limited or unreachable
+    skipped: int = 0        # no usable artist/title to search with
+    claimed_files: list = field(default_factory=list)
+    matched_examples: list = field(default_factory=list)
+    samples: list = field(default_factory=list)   # rendered LRC, to eyeball
+
+    @property
+    def pct(self) -> float:
+        """Share of the tracks Musixmatch recognised."""
+        return 100.0 * self.claimed / self.matched if self.matched else 0.0
+
+    @property
+    def pct_of_all(self) -> float:
+        """Share of everything asked about - what a pass would deliver."""
+        return 100.0 * self.claimed / self.checked if self.checked else 0.0
+
+    @property
+    def match_pct(self) -> float:
+        return 100.0 * self.matched / self.checked if self.checked else 0.0
+
+    @property
+    def flag_pct(self) -> float:
+        """How often the has_richsync flag told the truth."""
+        return 100.0 * self.verified / self.fetched if self.fetched else 0.0
+
+    @property
+    def margin(self) -> float:
+        """95% half-width on pct_of_all, with the finite-population
+        correction - the sample is a real slice of the population."""
+        if self.checked < 2:
+            return 100.0
+        share = self.claimed / self.checked
+        spread = (share * (1 - share) / self.checked) ** 0.5
+        if self.population > self.checked:
+            spread *= ((self.population - self.checked)
+                       / (self.population - 1)) ** 0.5
+        return 100.0 * 1.96 * spread
+
+    @property
+    def projected(self) -> int:
+        return int(round(self.population * self.pct_of_all / 100.0))
+
+
+def estimate_richsync_coverage(config: Config, sample: int = 100,
+                               verify: int = 5,
+                               on_detail: Callable[[str], None] = _noop,
+                               on_progress: Callable[[float], None] = _noop,
+                               seed: Optional[int] = None) -> RichsyncEstimate:
+    """Ask Musixmatch about a random sample of the tracks that have no
+    word timing today, and report how many it has richsync for.
+
+    The population is deliberately the tracks Apple has already failed to
+    serve word-by-word - a second source is only worth having for the
+    part the first one misses, so measuring against the whole library
+    would flatter it.
+
+    Read-only, and safe to interrupt. verify says how many of the tracks
+    flagged as covered to actually fetch, since a flag is not evidence.
+    """
+    import random
+
+    from . import musixmatch
+
+    files = list(iter_audio_line_level_lyrics(config.music_root))
+    result = RichsyncEstimate(population=len(files))
+    if not files:
+        return result
+    token = config.musixmatch_token
+    if not token:
+        try:
+            token = musixmatch.fetch_token()
+        except musixmatch.MusixmatchError as exc:
+            on_detail("no Musixmatch token: %s" % exc)
+            return result
+
+    chosen = (files if sample <= 0 or sample >= len(files)
+              else random.Random(seed).sample(files, sample))
+    on_detail("asking Musixmatch about %d of %d tracks with no word timing..."
+              % (len(chosen), len(files)))
+
+    def note(bucket: list, text: str) -> None:
+        if len(bucket) < 50:
+            bucket.append(text)
+
+    for index, path in enumerate(chosen):
+        artist, title, album, duration = read_track_meta(path) or ("", "", "", None)
+        if not artist or not title:
+            p_artist, p_title, p_album = meta_from_path(path, config.music_root)
+            artist, title = artist or p_artist, title or p_title
+        title = tidy_track_name(title, artist)
+        if not (artist and title):
+            result.skipped += 1
+        else:
+            result.checked += 1
+            try:
+                found = musixmatch.probe_track(token, artist, title, duration)
+                if not found or not found.get("track_id"):
+                    pass    # matched nothing; counted by omission
+                else:
+                    result.matched += 1
+                    note(result.matched_examples, "%s - %s  ->  %s - %s" % (
+                        artist, title, found.get("artist"), found.get("title")))
+                    if found["has_richsync"]:
+                        result.claimed += 1
+                        note(result.claimed_files, "%s - %s" % (artist, title))
+                        if result.fetched < verify:
+                            result.fetched += 1
+                            lrc = musixmatch.fetch_richsync(
+                                token, found["track_id"], duration)
+                            if lrc and has_word_timing(lrc):
+                                result.verified += 1
+                                note(result.samples, "%s - %s\n%s" % (
+                                    artist, title,
+                                    "\n".join(lrc.splitlines()[:4])))
+                            else:
+                                note(result.samples,
+                                     "%s - %s  ->  flagged, but no words came "
+                                     "back" % (artist, title))
+            except musixmatch.MusixmatchUnavailable as exc:
+                result.checked -= 1
+                result.deferred += 1
+                if result.deferred <= 3:
+                    on_detail("deferred: %s" % exc)
+            except Exception:
+                pass
+        if REQUEST_SPACING:
+            time.sleep(REQUEST_SPACING)
+        on_progress((index + 1) / len(chosen) * 100.0)
+        on_detail("%d/%d checked, %d matched, %d with richsync" % (
+            index + 1, len(chosen), result.matched, result.claimed))
+    return result
+
+
+@dataclass
 class SkipCheck:
     """Whether Apple's hasTimeSyncedLyrics flag can be trusted to skip a
     track without asking for its lyrics.
