@@ -13,6 +13,7 @@ from beetdrop.backfill import (
     backfill_lyrics,
     iter_audio_line_level_lyrics,
     iter_audio_missing_lyrics,
+    iter_audio_word_level_lyrics,
     meta_from_path,
     read_track_meta,
 )
@@ -484,6 +485,95 @@ class TestLyricsStats:
         assert body["word_pct"] == 100.0
 
 
+class TestRedoWordsPass:
+    """Apple times syllables, and we used to put a space between every
+    one, so "Tumble" was written "Tum ble". A finished .lrc no longer
+    says where the word breaks were, so no test of the file can find the
+    spoiled ones - the repair pass has to revisit them all."""
+
+    def _config(self, tmp_path):
+        music = tmp_path / "music"
+        music.mkdir()
+        return Config(music_root=music, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def _track(self, config, name, lrc=None):
+        path = config.music_root / "A" / ("%s.opus" % name)
+        make_opus(path)
+        write_full_tags(path, FullTags(title=name, artist="A"))
+        if lrc is not None:
+            path.with_suffix(".lrc").write_text(lrc)
+        return path
+
+    def test_finds_every_word_level_sidecar(self, tmp_path):
+        config = self._config(tmp_path)
+        word = self._track(config, "word", WORD_LRC)
+        self._track(config, "line", LINE_LRC)
+        self._track(config, "none", None)
+        assert list(iter_audio_word_level_lyrics(config.music_root)) == [word]
+
+    def test_a_sound_word_level_file_is_still_revisited(self, tmp_path,
+                                                        monkeypatch):
+        # The upgrade pass deliberately skips these; the repair pass must
+        # not, because "sound" is exactly what it cannot tell.
+        config = self._config(tmp_path)
+        self._track(config, "word", WORD_LRC)
+        assert list(iter_audio_line_level_lyrics(config.music_root)) == []
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: WORD_LRC)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, redo_words=True)
+        assert result.total == 1 and result.upgraded == 1
+
+    def test_rewrites_the_sidecar_with_what_apple_returns_now(self, tmp_path,
+                                                              monkeypatch):
+        config = self._config(tmp_path)
+        split = "[00:01.00]<00:01.00>Tum <00:01.50>ble <00:02.00>out"
+        joined = "[00:01.00]<00:01.00>Tum<00:01.50>ble <00:02.00>out"
+        track = self._track(config, "word", split)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: joined)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, redo_words=True)
+        assert result.upgraded == 1
+        assert track.with_suffix(".lrc").read_text() == joined
+
+    def test_a_line_level_answer_never_overwrites_word_timing(self, tmp_path,
+                                                              monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "word", WORD_LRC)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: LINE_LRC)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        result = backfill_lyrics(config, redo_words=True)
+        assert result.upgraded == 0 and result.no_match == 1
+        assert track.with_suffix(".lrc").read_text() == WORD_LRC
+
+    def test_nothing_found_leaves_the_file_alone(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        track = self._track(config, "word", WORD_LRC)
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        backfill_lyrics(config, redo_words=True)
+        assert track.with_suffix(".lrc").read_text() == WORD_LRC
+
+    def test_it_asks_apple_alone_for_word_timing(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        config.word_lyrics = False
+        self._track(config, "word", WORD_LRC)
+        seen = {}
+
+        def fake(*args, **kwargs):
+            seen.update(kwargs)
+            return WORD_LRC
+
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+        backfill_lyrics(config, redo_words=True)
+        assert seen["word_by_word"] is True and seen["word_only"] is True
+
+
 class TestUpgradeRepairsBackwardsTiming:
     def test_a_backwards_word_file_is_offered_to_the_upgrade(self, tmp_path):
         root = tmp_path / "music"
@@ -835,8 +925,10 @@ class TestScanButtonsPickTheRightPass:
         ("", "__library__"),
         ("?refresh=true", "__refresh__"),
         ("?upgrade=true", "__upgrade__"),
+        ("?redo_words=true", "__rewords__"),
         # Upgrade wins, matching the server's own precedence.
         ("?refresh=true&upgrade=true", "__upgrade__"),
+        ("?upgrade=true&redo_words=true", "__rewords__"),
     ])
     def test_marker_matches_the_requested_pass(self, tmp_path, query, marker):
         config = self._config(tmp_path)
@@ -852,6 +944,12 @@ class TestScanButtonsPickTheRightPass:
         scan = scan[:scan.index("async appleSignIn(")]
         assert "upgrade=true" in scan, "the Upgrade button posts a plain scan"
         assert "refresh=true" in scan
+        assert "redo_words=true" in scan
+
+    def test_the_page_offers_the_re_render_button(self):
+        page = (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        assert "scanLyrics(false, false, true)" in page
 
 
 class TestWordCoverageEstimate:

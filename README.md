@@ -153,9 +153,10 @@ CLI:
 python -m beetdrop search "artist song" [--albums | --videos]
 python -m beetdrop grab <video_id> [--album | --video] [--format opus|m4a|mp3] [--library PATH]
 python -m beetdrop lyrics-probe "Artist" "Title" [--duration N]  # why a track is line-level
-python -m beetdrop scan-lyrics [--refresh|--upgrade|--stats]  # backfill .lrc
+python -m beetdrop scan-lyrics [--refresh|--upgrade|--redo-words|--stats]  # backfill .lrc
                                                # --refresh purges junk first
                                                # --upgrade re-fetches line-level as word-by-word
+                                               # --redo-words re-renders every word-by-word .lrc
 python -m beetdrop serve [--host 0.0.0.0] [--port 8090]
 ```
 

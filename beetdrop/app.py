@@ -564,7 +564,8 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
         return {"removed": store.clear_reviews()}
 
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
-    async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False):
+    async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False,
+                              redo_words: bool = False):
         """Backfill synced lyrics for library tracks that have no .lrc yet.
 
         refresh=true first deletes placeholder sidecars (generated junk
@@ -574,9 +575,11 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
 
         Runs as a normal cancellable job so the queue shows its progress.
         """
-        marker = ("__upgrade__" if upgrade else
+        marker = ("__rewords__" if redo_words else
+                  "__upgrade__" if upgrade else
                   "__refresh__" if refresh else "__library__")
-        for candidate in ("__library__", "__refresh__", "__upgrade__"):
+        for candidate in ("__library__", "__refresh__", "__upgrade__",
+                          "__rewords__"):
             existing = store.find_duplicate(candidate, "lyricscan")
             if existing is not None and existing["stage"] not in (
                     "done", "failed", "cancelled"):
@@ -587,7 +590,9 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
                                              ("id", "title", "stage", "created_at")}})
         job = manager.enqueue(marker, kind="lyricscan")
         # Label it up front so the queue card reads cleanly from the start.
-        title = "Library lyrics refresh" if refresh else "Library lyrics scan"
+        title = ("Library word-by-word re-render" if redo_words else
+                 "Library lyrics refresh" if refresh else
+                 "Library lyrics scan")
         return store.update_job(job["id"], title=title) or job
 
     @app.get("/events", dependencies=[protected])

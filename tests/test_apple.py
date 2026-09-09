@@ -1,6 +1,8 @@
 """Apple Music lyrics: TTML conversion, search/fetch, the provider chain,
 and the settings round-trip. All HTTP is faked."""
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -417,6 +419,72 @@ BG_TTML = (
     '<span begin="162.50" end="163.00">(Out</span> '
     '<span begin="163.00" end="164.00">he-e-ere)</span>'
     '</span></p></div></body></tt>')
+
+
+SYLLABLE_TTML = (
+    '<tt xmlns="http://www.w3.org/ns/ttml" '
+    'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+    'xmlns:ttm="http://www.w3.org/ns/ttml#metadata" itunes:timing="Word">'
+    '<body><div><p begin="9.93" end="12.20">'
+    '<span begin="9.93" end="10.18">Tum</span>'
+    '<span begin="10.18" end="10.32">ble</span> '
+    '<span begin="10.32" end="10.50">out</span> '
+    '<span begin="10.50" end="10.64">of</span> '
+    '<span begin="10.64" end="10.92">bed,</span> '
+    '<span begin="10.92" end="11.09">and</span> '
+    '<span begin="11.09" end="11.25">I</span> '
+    '<span begin="11.25" end="11.39">stum</span>'
+    '<span begin="11.39" end="11.54">ble</span>'
+    '</p></div></body></tt>')
+
+
+class TestSyllables:
+    """The endpoint is /syllable-lyrics: a word arrives as one span per
+    syllable, and only the whitespace between them says where the word
+    ends. Joining every span with a space wrote "Tum ble out of bed"."""
+
+    def test_syllables_of_one_word_are_not_split_apart(self):
+        lrc = apple.ttml_to_lrc(SYLLABLE_TTML, word_by_word=True)
+        assert lrc == (
+            "[00:09.93]<00:09.93>Tum<00:10.18>ble <00:10.32>out "
+            "<00:10.50>of <00:10.64>bed, <00:10.92>and <00:11.09>I "
+            "<00:11.25>stum<00:11.39>ble")
+
+    def test_every_syllable_keeps_its_own_timestamp(self):
+        lrc = apple.ttml_to_lrc(SYLLABLE_TTML, word_by_word=True)
+        assert lrc.count("<00:") == 9
+
+    def test_the_plain_text_reads_as_words(self):
+        lrc = apple.ttml_to_lrc(SYLLABLE_TTML, word_by_word=True)
+        assert "Tumble out of bed, and I stumble" in re.sub(
+            r"[\[<][\d:.]+[\]>]", "", lrc)
+
+    def test_a_space_carried_on_the_text_itself_still_separates(self):
+        ttml = (
+            '<tt xmlns="http://www.w3.org/ns/ttml" '
+            'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+            'itunes:timing="Word"><body><div><p begin="1.0">'
+            '<span begin="1.0">one</span><span begin="2.0"> two</span>'
+            '</p></div></body></tt>')
+        assert apple.ttml_to_lrc(ttml, word_by_word=True) == (
+            "[00:01.00]<00:01.00>one <00:02.00>two")
+
+    def test_a_body_with_no_whitespace_at_all_falls_back_to_spacing(self):
+        # Some other shape of TTML could carry no whitespace anywhere.
+        # Running the whole line together would be far worse than the old
+        # behaviour, so that case keeps the old behaviour.
+        ttml = (
+            '<tt xmlns="http://www.w3.org/ns/ttml" '
+            'xmlns:itunes="http://music.apple.com/lyric-ttml-internal" '
+            'itunes:timing="Word"><body><div><p begin="1.0">'
+            '<span begin="1.0">one</span><span begin="2.0">two</span>'
+            '</p></div></body></tt>')
+        assert apple.ttml_to_lrc(ttml, word_by_word=True) == (
+            "[00:01.00]<00:01.00>one <00:02.00>two")
+
+    def test_line_level_rendering_is_untouched(self):
+        assert apple.ttml_to_lrc(SYLLABLE_TTML) == (
+            "[00:09.93]Tumble out of bed, and I stumble")
 
 
 class TestBackgroundVocals:

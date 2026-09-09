@@ -384,24 +384,27 @@ createApp({
       }
     },
 
-    async scanLyrics(refresh, upgrade) {
+    async scanLyrics(refresh, upgrade, redoWords) {
       this.scanningLyrics = true;
       try {
         // upgrade was accepted here and then dropped: every button posted
         // a plain scan, so "Upgrade to word-by-word" silently ran the
         // fetch-missing pass instead. The server has always understood
         // the flag. Upgrade wins over refresh, as it does server-side.
-        const query = upgrade ? "?upgrade=true" : refresh ? "?refresh=true" : "";
+        const query = redoWords ? "?redo_words=true"
+          : upgrade ? "?upgrade=true"
+            : refresh ? "?refresh=true" : "";
         const job = await this.api("/api/lyrics/scan" + query,
                                    { method: "POST" });
         this.upsertJob(job);
         this.settingsOpen = false;
         this.queueOpen = true;
-        this.showToast(upgrade
-          ? "Upgrading existing lyrics to word-by-word"
-          : refresh
-            ? "Deleting bad lyrics and re-fetching"
-            : "Library lyrics scan started");
+        this.showToast(redoWords
+          ? "Re-rendering every word-by-word sidecar"
+          : upgrade
+            ? "Upgrading existing lyrics to word-by-word"
+              ? "Deleting bad lyrics and re-fetching"
+              : "Library lyrics scan started");
       } catch (err) {
         if (err.message === "password required") return;
         this.showToast(err.status === 409

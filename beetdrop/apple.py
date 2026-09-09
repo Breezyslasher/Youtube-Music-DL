@@ -717,18 +717,34 @@ def _render_words(spans, default_begin: float) -> str:
     A word missing a begin, or carrying one earlier than the word before
     it, would make a player rewind mid-line; it inherits the running time
     instead.
+
+    Apple's endpoint is /syllable-lyrics and it times *syllables*, so
+    "Tumble" arrives as two adjacent spans. The only thing telling a
+    syllable apart from the next word is the whitespace between them,
+    which lives in the earlier span's tail. Syllables keep their own tag
+    but are not pulled apart by a space.
     """
-    pieces, running = [], default_begin
+    pieces, running, gap = [], default_begin, False
     for span in spans:
-        word = "".join(span.itertext()).strip()
+        raw = "".join(span.itertext())
+        word = raw.strip()
+        gap = gap or raw[:1].isspace()
         if not word:
+            gap = gap or bool(raw) or (span.tail or "")[:1].isspace()
             continue
         at = _parse_time(span.get("begin"))
         if at is None or at < running:
             at = running
         running = at
+        if pieces and gap:
+            pieces.append(" ")
         pieces.append("<%s>%s" % (_stamp(at), word))
-    return " ".join(pieces)
+        gap = raw[-1:].isspace() or (span.tail or "")[:1].isspace()
+    # A body carrying no whitespace at all would otherwise run every word
+    # of the line together; fall back to the old spacing there.
+    if len(pieces) > 1 and " " not in pieces:
+        return " ".join(pieces)
+    return "".join(pieces)
 
 
 def ttml_to_lrc(ttml: str, word_by_word: bool = False) -> Optional[str]:

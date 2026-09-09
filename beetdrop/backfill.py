@@ -435,6 +435,28 @@ def iter_audio_line_level_lyrics(root: Path):
             yield path
 
 
+def iter_audio_word_level_lyrics(root: Path):
+    """Audio whose .lrc already carries per-word timing.
+
+    A rendering defect in a word-level sidecar can only be repaired by
+    asking Apple again: the file itself no longer records where the word
+    breaks were, so nothing on disk can tell a sound file from a spoiled
+    one. This yields all of them, for a pass that re-renders the lot.
+    """
+    for path in sorted(root.rglob("*")):
+        if not (path.is_file() and path.suffix.lower() in AUDIO_EXTS):
+            continue
+        sidecar = path.with_suffix(".lrc")
+        if not sidecar.is_file():
+            continue
+        try:
+            text = sidecar.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if has_word_timing(text):
+            yield path
+
+
 def tidy_track_name(title: str, artist: str) -> str:
     """Make a usable track name out of whatever a tagger left behind.
 
@@ -589,6 +611,7 @@ def backfill_lyrics(
     files: Optional[list] = None,
     purge_bad: bool = False,
     upgrade: bool = False,
+    redo_words: bool = False,
     store=None,
 ) -> BackfillResult:
     """Fetch and write .lrc sidecars for library tracks missing them.
@@ -602,16 +625,28 @@ def backfill_lyrics(
     the same lyrics: a result without word timing is discarded rather than
     written over what is already there.
 
+    redo_words widens that to every word-level sidecar, sound or not. It
+    is for repairing a defect in how we rendered them, which no test of
+    the file can spot - the file no longer says where Apple put the word
+    breaks - so the only honest answer is to fetch them all again.
+
     on_progress/on_detail let the job layer mirror the scan and also act as
     cancellation checkpoints. `files` lets a caller pre-compute the list.
     """
+    # Re-rendering wants everything an upgrade does - per-word timing, and
+    # a file replaced only by a sound word-level one - over a wider net.
+    upgrade = upgrade or redo_words
     purged = 0
     if purge_bad:
         on_detail("checking existing lyrics for placeholder junk...")
         purged = purge_bad_lyrics(config.music_root, on_detail)
     if files is None:
-        files = list(iter_audio_line_level_lyrics(config.music_root) if upgrade
-                     else iter_audio_missing_lyrics(config.music_root))
+        if redo_words:
+            files = list(iter_audio_word_level_lyrics(config.music_root))
+        else:
+            files = list(iter_audio_line_level_lyrics(config.music_root)
+                         if upgrade else
+                         iter_audio_missing_lyrics(config.music_root))
     total = len(files)
     added = skipped = no_match = upgraded = deferred = 0
     # Decisions already made outrank matching, so a rescan never undoes one.

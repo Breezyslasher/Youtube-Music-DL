@@ -182,10 +182,15 @@ def cmd_scan_lyrics(args, config: Config) -> int:
         print("error: %s" % exc, file=sys.stderr)
         return 1
     result = backfill_lyrics(config, on_detail=lambda text: print(text),
-                             purge_bad=args.refresh, upgrade=args.upgrade)
+                             purge_bad=args.refresh, upgrade=args.upgrade,
+                             redo_words=args.redo_words)
     if result.purged:
         print("removed %d placeholder lyric files" % result.purged)
-    if args.upgrade:
+    if args.redo_words:
+        print("done: re-rendered %d of %d word-by-word tracks "
+              "(%d left as they were)" % (
+                  result.upgraded, result.total, result.no_match))
+    elif args.upgrade:
         print("done: upgraded %d of %d line-level tracks to word-by-word "
               "(%d had no word-level version)" % (
                   result.upgraded, result.total, result.no_match))
@@ -684,6 +689,10 @@ def main(argv=None) -> int:
     p_scan.add_argument("--upgrade", action="store_true",
                         help="re-fetch tracks whose .lrc has no per-word timing "
                              "and replace it when Apple has a word-level version")
+    p_scan.add_argument("--redo-words", action="store_true",
+                        help="re-fetch every .lrc that already has per-word "
+                             "timing and write it again, to repair sidecars "
+                             "left behind by an older rendering")
     p_scan.set_defaults(func=cmd_scan_lyrics)
 
     p_probe = sub.add_parser(
