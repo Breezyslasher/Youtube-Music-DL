@@ -22,6 +22,7 @@ from .config import Config
 from .library import write_lyrics_sidecar
 from .lyrics import (
     LyricsUnavailable,
+    carries_no_lyrics,
     fetch_synced_lyrics,
     has_backwards_word_timing,
     has_word_timing,
@@ -372,15 +373,17 @@ def iter_lyrics_files(root: Path):
 
 
 def find_bad_lyrics(root: Path) -> list:
-    """Existing .lrc sidecars that are generated placeholder text rather
-    than real lyrics (perfectly uniform line timing)."""
+    """Existing .lrc sidecars worth deleting: generated placeholder text
+    with perfectly uniform line timing, and files carrying no lyrics at
+    all - a lone "Instrumental" or an empty timestamp, which still makes
+    the track look done so no later pass revisits it."""
     bad = []
     for path in iter_lyrics_files(root):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if looks_synthetic(text):
+        if looks_synthetic(text) or carries_no_lyrics(text):
             bad.append(path)
     return bad
 

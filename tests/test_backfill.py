@@ -1188,3 +1188,49 @@ class TestAChoiceOutranksMatching:
         result = backfill_lyrics(config, store=store)
         assert result.skipped == 1
         assert not track.with_suffix(".lrc").exists()
+
+
+class TestPlaceholderForAnInstrumental:
+    """A source with nothing to say for an instrumental answers with a
+    marker rather than a refusal. Written out it is a sidecar carrying no
+    lyrics that still makes the track look done, so no later pass
+    revisits it. Found on a real library: "Instrumental", a lone dash, and
+    a bare timestamp, on Eruption and other instrumentals."""
+
+    from beetdrop.lyrics import carries_no_lyrics as _check
+
+    @pytest.mark.parametrize("lrc", [
+        "[00:00.00]Instrumental",
+        "[00:00.00] Instrumental",
+        "[00:00.00]",
+        "[00:00.00]-",
+        "[00:01.00]Intro\n[00:05.00]Outro",
+        "",
+    ])
+    def test_rejected(self, lrc):
+        assert backfill.carries_no_lyrics(lrc)
+
+    @pytest.mark.parametrize("lrc", [
+        "[00:01.60]Be a good boy and put this on",     # a real one-line skit
+        "[00:00.23]Are you still up?",
+        "[00:01.00]<00:01.00>real <00:01.40>words",
+        "[00:01.00]Instrumental break coming up now",  # real words, not a marker
+    ])
+    def test_kept(self, lrc):
+        assert not backfill.carries_no_lyrics(lrc)
+
+    def test_such_a_file_is_swept_up_by_refresh(self, tmp_path):
+        root = tmp_path / "m"
+        (root / "A").mkdir(parents=True)
+        (root / "A" / "eruption.lrc").write_text("[00:00.00]Instrumental")
+        (root / "A" / "real.lrc").write_text(
+            "[00:11.20]Thought I found a way\n[00:14.05]out")
+        bad = [p.name for p in backfill.find_bad_lyrics(root)]
+        assert bad == ["eruption.lrc"]
+
+    def test_it_is_never_written_in_the_first_place(self, monkeypatch):
+        from beetdrop import lyrics as ly
+        monkeypatch.setattr(ly, "_lrclib", lambda *a, **k: "[00:00.00]Instrumental")
+        monkeypatch.setattr(ly, "_musixmatch", lambda *a, **k: None)
+        monkeypatch.setattr(ly, "_apple", lambda *a, **k: None)
+        assert ly.fetch_synced_lyrics("A", "S") is None
