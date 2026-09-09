@@ -212,7 +212,8 @@ class RichsyncEstimate:
     """
     population: int = 0     # tracks with no word timing today
     checked: int = 0        # tracks we got as far as asking about
-    matched: int = 0        # of those, ones Musixmatch recognised
+    matched: int = 0        # of those, ones that were really the track
+    wrong_match: int = 0    # answered, but with a different song
     claimed: int = 0        # of the matches, ones flagged has_richsync
     verified: int = 0       # of those fetched, ones that really returned words
     fetched: int = 0        # how many claims were actually tested
@@ -220,6 +221,7 @@ class RichsyncEstimate:
     skipped: int = 0        # no usable artist/title to search with
     claimed_files: list = field(default_factory=list)
     matched_examples: list = field(default_factory=list)
+    wrong_match_files: list = field(default_factory=list)
     samples: list = field(default_factory=list)   # rendered LRC, to eyeball
 
     @property
@@ -314,6 +316,12 @@ def estimate_richsync_coverage(config: Config, sample: int = 100,
                 found = musixmatch.probe_track(token, artist, title, duration)
                 if not found or not found.get("track_id"):
                     pass    # matched nothing; counted by omission
+                elif not found.get("looks_right", True):
+                    # Musixmatch answers with its best effort rather than
+                    # nothing, so an unchecked match rate is always 100%.
+                    result.wrong_match += 1
+                    note(result.wrong_match_files, "%s - %s  ->  %s - %s" % (
+                        artist, title, found.get("artist"), found.get("title")))
                 else:
                     result.matched += 1
                     note(result.matched_examples, "%s - %s  ->  %s - %s" % (
