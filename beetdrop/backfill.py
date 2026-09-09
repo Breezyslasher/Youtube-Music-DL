@@ -799,6 +799,13 @@ def backfill_lyrics(
     # a file replaced only by a sound word-level one - over a wider net.
     upgrade = upgrade or redo_words
     purged = 0
+    if store is not None:
+        # Cheap, and scope-independent: a file either exists or does not,
+        # whichever folder this run covers.
+        forgotten = store.drop_missing_reviews()
+        if forgotten:
+            on_detail("forgot %d queued track(s) whose file is gone"
+                      % forgotten)
     if purge_bad:
         on_detail("checking existing lyrics for placeholder junk...")
         purged = purge_bad_lyrics(config.music_root, on_detail)
@@ -893,9 +900,12 @@ def backfill_lyrics(
                     # decision a person can overrule, and on a re-render it
                     # is the difference between a repaired sidecar and one
                     # quietly left spoiled. Queue it, as the fetch pass does.
-                    if refused and store is not None:
-                        store.add_review(str(path), artist, title,
-                                         int(duration or 0), refused[:8])
+                    if store is not None:
+                        if refused:
+                            store.add_review(str(path), artist, title,
+                                             int(duration or 0), refused[:8])
+                        else:
+                            store.drop_review(str(path))
             elif lrc:
                 try:
                     write_lyrics_sidecar(path, lrc)
@@ -909,9 +919,17 @@ def backfill_lyrics(
                 # Apple offered candidates and every one was refused. That
                 # is the only kind of miss a person can usefully overrule,
                 # so queue it rather than let it vanish into a count.
-                if refused and store is not None:
-                    store.add_review(str(path), artist, title,
-                                     int(duration or 0), refused[:8])
+                if store is not None:
+                    if refused:
+                        store.add_review(str(path), artist, title,
+                                         int(duration or 0), refused[:8])
+                    else:
+                        # It failed a different way this time - Apple
+                        # offered nothing at all - so whatever was queued
+                        # about it is stale. There is nothing to choose
+                        # between, and leaving the old candidates up asks
+                        # for a decision that no longer applies.
+                        store.drop_review(str(path))
             if REQUEST_SPACING:
                 time.sleep(REQUEST_SPACING)
         on_detail("%d/%d checked, %d %s" % (

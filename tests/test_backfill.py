@@ -1012,6 +1012,99 @@ class TestReviewQueueEndpoints:
         assert '"DELETE"' in source
 
 
+class TestTheQueueDoesNotGoStale:
+    """The queue is keyed by path and was only ever emptied by deciding a
+    track. Anything that failed a *different* way on a later run, and
+    anything whose file was deleted, stayed in the list for good - asking
+    for decisions that no longer applied."""
+
+    def _config(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        track = config.music_root / "A" / "song.opus"
+        track.write_bytes(b"x")
+        return config, track
+
+    def _run(self, config, store, monkeypatch, candidates=None, lrc=None):
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def fake(*a, **k):
+            if candidates and k.get("on_candidates"):
+                k["on_candidates"](candidates)
+            return lrc
+
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", fake)
+        return backfill_lyrics(config, store=store)
+
+    REFUSED = [{"id": "1", "title": "Song (Live)", "artist": "A",
+                "reason": "a different performance"}]
+
+    def test_a_track_apple_now_offers_nothing_for_is_forgotten(
+            self, tmp_path, monkeypatch):
+        config, track = self._config(tmp_path)
+        store = Store(config.db_path)
+        self._run(config, store, monkeypatch, candidates=self.REFUSED)
+        assert store.count_reviews() == 1
+        # Second run: Apple returns nothing at all this time.
+        self._run(config, store, monkeypatch, candidates=None)
+        assert store.count_reviews() == 0
+
+    def test_a_still_refused_track_is_refreshed_not_duplicated(
+            self, tmp_path, monkeypatch):
+        config, _ = self._config(tmp_path)
+        store = Store(config.db_path)
+        self._run(config, store, monkeypatch, candidates=self.REFUSED)
+        self._run(config, store, monkeypatch, candidates=self.REFUSED)
+        assert store.count_reviews() == 1
+
+    def test_a_track_that_finally_gets_lyrics_leaves_the_queue(
+            self, tmp_path, monkeypatch):
+        config, track = self._config(tmp_path)
+        store = Store(config.db_path)
+        self._run(config, store, monkeypatch, candidates=self.REFUSED)
+        assert store.count_reviews() == 1
+        track.with_suffix(".lrc").unlink(missing_ok=True)
+        self._run(config, store, monkeypatch, lrc="[00:01.00]found at last")
+        assert store.count_reviews() == 0
+
+    def test_a_queued_track_whose_file_is_gone_is_forgotten(self, tmp_path,
+                                                            monkeypatch):
+        config, track = self._config(tmp_path)
+        store = Store(config.db_path)
+        self._run(config, store, monkeypatch, candidates=self.REFUSED)
+        assert store.count_reviews() == 1
+        track.unlink()
+        self._run(config, store, monkeypatch)
+        assert store.count_reviews() == 0
+
+    def test_a_file_that_still_exists_is_kept(self, tmp_path):
+        config, track = self._config(tmp_path)
+        store = Store(config.db_path)
+        store.add_review(str(track), "A", "Song", 200, [{"id": "1"}])
+        assert store.drop_missing_reviews() == 0
+        assert store.count_reviews() == 1
+
+    def test_a_deferred_track_keeps_its_entry(self, tmp_path, monkeypatch):
+        # Nobody could answer, so nothing was learned about the track -
+        # dropping it would throw away a decision still worth making.
+        config, _ = self._config(tmp_path)
+        store = Store(config.db_path)
+        self._run(config, store, monkeypatch, candidates=self.REFUSED)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "Song", "Al", 200))
+        monkeypatch.setattr(backfill, "REQUEST_SPACING", 0)
+
+        def unavailable(*a, **k):
+            raise backfill.LyricsUnavailable("rate limited")
+
+        monkeypatch.setattr(backfill, "fetch_synced_lyrics", unavailable)
+        backfill_lyrics(config, store=store)
+        assert store.count_reviews() == 1
+
+
 class TestSearchingForAMissingTrackByHand:
     """A track Apple returned nothing for never reaches the review queue -
     there is nothing to choose between - so until now there was no way to

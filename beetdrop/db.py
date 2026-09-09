@@ -151,6 +151,27 @@ class Store:
             self._db.execute("DELETE FROM lyric_reviews WHERE path = ?", (path,))
             self._db.commit()
 
+    def drop_missing_reviews(self) -> int:
+        """Forget queued tracks whose file is no longer there.
+
+        The queue is keyed by path and only ever cleared by deciding a
+        track or by hand, so a file deleted or moved after being queued
+        stayed in the list for good - asking for a decision about
+        something that no longer exists.
+        """
+        import os
+
+        with self._lock:
+            rows = self._db.execute("SELECT path FROM lyric_reviews").fetchall()
+        gone = [row["path"] for row in rows if not os.path.exists(row["path"])]
+        if not gone:
+            return 0
+        with self._lock:
+            self._db.executemany("DELETE FROM lyric_reviews WHERE path = ?",
+                                 [(path,) for path in gone])
+            self._db.commit()
+        return len(gone)
+
     def clear_reviews(self) -> int:
         with self._lock:
             removed = self._db.execute("DELETE FROM lyric_reviews").rowcount
