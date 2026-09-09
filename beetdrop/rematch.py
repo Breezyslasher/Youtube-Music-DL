@@ -173,12 +173,22 @@ def _find_recording(mb, recording_id: str, title: str, artist: str) -> Optional[
 
 
 def apply_choice(config: Config, mb, path: Path, recording_id: str,
-                 title: str, artist: str) -> Rematch:
-    """Re-tag this file as the chosen recording and file it accordingly.
+                 title: str, artist: str, move: bool = True) -> Rematch:
+    """Re-tag this file as the chosen recording and re-file it.
 
-    The .lrc beside it moves too. Lyrics are matched to the audio, not to
-    the tags, so they are still right - and leaving them behind would
-    strand them next to nothing.
+    Moving is the default because a wrong match is not only wrong tags:
+    the folder and filename were built from them too, so a track matched
+    to the wrong song is sitting under the wrong artist and album. Fixing
+    the tags and leaving it there would only half-fix it.
+
+    move=False re-tags where it stands, for a library whose layout is not
+    Beetdrop's - several collections under one mount, say, where this
+    layout has no room for the first folder and moving would carry a
+    track out of the collection it belongs to.
+
+    The .lrc beside it comes along on a move. Lyrics are matched to the
+    audio, not to the tags, so they are still right - and leaving them
+    behind would strand them next to nothing.
     """
     if not path.is_file():
         raise FileNotFoundError("that file is gone")
@@ -187,6 +197,10 @@ def apply_choice(config: Config, mb, path: Path, recording_id: str,
         raise LookupError("MusicBrainz no longer offers that recording")
 
     tags, _release = _tags_for(mb, recording, title, artist)
+    if not move:
+        write_full_tags(path, tags)
+        return Rematch(old_path=path, new_path=path, tags=tags)
+
     destination = (album_dir(config.music_root, tags)
                    / track_filename(tags, path.suffix.lstrip(".")))
     if destination.resolve() == path.resolve():

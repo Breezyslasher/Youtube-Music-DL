@@ -446,6 +446,10 @@
                   @click="findMatches(track)">
             {{ track.searching ? 'Looking...' : 'Find on MusicBrainz' }}
           </button>
+          <label class="wordpick">
+            <input type="checkbox" v-model="track.move">
+            move the file to match the new tags
+          </label>
           <button v-for="c in (track.candidates || [])" :key="c.id"
                   type="button" class="candidate"
                   :disabled="fixingMatch === track.path"

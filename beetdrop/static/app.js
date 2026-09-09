@@ -501,6 +501,7 @@ createApp({
         queryArtist: track.artist || "",
         candidates: null,
         searching: false,
+        move: true,
       }));
     },
 
@@ -550,6 +551,7 @@ createApp({
           body: JSON.stringify({
             path: track.path, recording_id: candidate.id,
             title: track.query, artist: track.queryArtist,
+            move: track.move,
           }),
         });
         this.showToast(body.detail || "filed");
