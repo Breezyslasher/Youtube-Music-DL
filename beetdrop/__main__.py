@@ -181,9 +181,16 @@ def cmd_scan_lyrics(args, config: Config) -> int:
     except StorageError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
+    # The same database the web UI writes decisions into. Without it a CLI
+    # scan matched everything afresh: a track identified by hand was looked
+    # up again, and on an overwriting pass the hand-picked lyrics were
+    # replaced by whatever matching chose. Refusals went unrecorded too, so
+    # nothing scanned from here ever reached the review queue.
+    from .db import Store
+    store = Store(config.db_path)
     result = backfill_lyrics(config, on_detail=lambda text: print(text),
                              purge_bad=args.refresh, upgrade=args.upgrade,
-                             redo_words=args.redo_words)
+                             redo_words=args.redo_words, store=store)
     if result.purged:
         print("removed %d placeholder lyric files" % result.purged)
     if args.redo_words:
