@@ -109,6 +109,23 @@ video library is a `Music Videos` subfolder of `/music`, so no extra mount
 is needed; set `VIDEO_PATH` (or the Settings field) to put it on its own
 disk. Max quality is set with `BEETDROP_VIDEO_MAX_HEIGHT` or in Settings.
 
+## Fixing a wrong match
+
+There is no acoustic fingerprinting, so a cover or a same-length
+different song can get through. Two kinds go wrong: a grab that could
+not be verified is filed under `_review/` with tags taken from YouTube,
+and a grab that matched the *wrong* song confidently is filed as
+verified and looks settled. Settings lists the first and searches the
+library for the second - by whatever it is wrongly called, which is what
+shows in your player.
+
+Pick the right recording and Beetdrop re-tags the file and moves it to
+where those tags say it belongs; the .lrc beside it comes too, since
+lyrics are matched to the audio rather than the tags. Candidates are
+shown as MusicBrainz returned them, unscored: the automatic checks are
+what got it wrong, so applying them again would hide the right answer.
+Tracks only for now; albums are a bigger job.
+
 ## Lyrics on their own
 
 A fourth search mode, Lyrics, searches Apple Music and saves the .lrc
