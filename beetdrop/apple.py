@@ -70,6 +70,10 @@ _TTM_ROLE = "{http://www.w3.org/ns/ttml#metadata}role"
 # the web player for every track.
 _DEV_TOKEN_TTL = 6 * 3600
 _dev_token = {"value": "", "at": 0.0}
+# Developer tokens that have answered an authenticated call. Until a
+# token is in here a 429 from it may mean "wrong token" rather than
+# "slow down" - the two are indistinguishable in Apple's response.
+_auth_proven = set()
 _dev_lock = threading.Lock()
 # Rescraping the web player is expensive, so a rejected token is replaced
 # at most this often however many tracks hit the rejection.
@@ -175,7 +179,7 @@ def _token_works(token: str) -> bool:
     return response.status_code == 200
 
 
-def fetch_developer_token(force: bool = False) -> str:
+def fetch_developer_token(force: bool = False, avoid: str = "") -> str:
     """A developer token the catalog API actually accepts, cached.
 
     This used to take the first JWT on the page and hope. On a real
@@ -184,6 +188,13 @@ def fetch_developer_token(force: bool = False) -> str:
     like a rate limit and is not one. Hours were spent waiting out a
     quota that did not exist. So each candidate is now tried, and the one
     that answers is the one we keep.
+
+    avoid names a token that has just been refused somewhere the search
+    probe cannot see. Apple hands out several, they are not
+    interchangeable, and which one leads varies - so a token that passes
+    a public catalog search can still be refused by the subscriber-gated
+    lyrics endpoint. Skipping it here is what lets the next one be tried
+    instead of the refusal being read as a rate limit again.
     """
     with _dev_lock:
         fresh = (not force and _dev_token["value"]
@@ -197,11 +208,17 @@ def fetch_developer_token(force: bool = False) -> str:
     if not candidates:
         raise AppleError("no developer token found in the Music web player")
     for token in candidates:
+        if token == avoid:
+            continue
         if _token_works(token):
             with _dev_lock:
                 _dev_token["value"] = token
                 _dev_token["at"] = time.time()
             return token
+    if avoid:
+        # Nothing else was accepted, so the one we were told to skip is
+        # all there is. Saying so beats returning nothing at all.
+        return avoid
     raise AppleError(
         "found %d developer token(s) in the Music web player and the catalog "
         "API refused every one. Apple may have changed what it requires; "
@@ -312,14 +329,34 @@ def describe_last_error() -> str:
     return "\n".join(parts)
 
 
-def _get_json(url, headers, params=None):
+def _get_json(url, headers, params=None, wait: bool = True):
     """One catalog call, waited out while Apple is asking us to slow down.
 
     A library scan runs these back to back, so 429 is a real outcome. It
     has to be waited out rather than returned: to every caller above,
     "no data" is indistinguishable from "this track has no lyrics", so a
     throttled scan would quietly mark thousands of tracks as misses.
+
+    wait=False makes one attempt and hands a 429 straight back without
+    backing off or holding other calls, for a caller that has something
+    better to try first. An existing hold is still honoured - a probe
+    must not jump a queue everything else is waiting in.
     """
+    if not wait:
+        _await_throttle()
+        try:
+            response = requests.get(url, headers=headers, params=params,
+                                    timeout=TIMEOUT)
+        except requests.RequestException:
+            return None, 0
+        if not response.ok:
+            _record_error(url, response)
+            return None, response.status_code
+        try:
+            return response.json(), 200
+        except ValueError:
+            return None, 200
+
     delay = THROTTLE_BACKOFF
     for attempt in range(THROTTLE_RETRIES + 1):
         _await_throttle()
@@ -364,7 +401,7 @@ def _refresh_developer_token(stale: str) -> str:
             return current
         _last_refresh = time.time()
     try:
-        return fetch_developer_token(force=True)
+        return fetch_developer_token(force=True, avoid=stale)
     except AppleError:
         return ""
 
@@ -379,14 +416,32 @@ def _get_json_auth(url, developer_token: str, media_user_token: str,
     as having no lyrics - a run that quietly goes empty half way through
     and still reports success.
     """
+    # A token is only probed until it has answered one authenticated call.
+    # After that a 429 from it really is a rate limit, and probing every
+    # track would double the requests during one.
+    probing = developer_token not in _auth_proven
     data, status = _get_json(url, _headers(developer_token, media_user_token),
-                             params)
-    if status not in (401, 403):
+                             params, wait=not probing)
+    if status == 200:
+        _auth_proven.add(developer_token)
+        return data, status, developer_token
+    if status not in (401, 403, 429):
+        return data, status, developer_token
+    if status == 429 and not probing:
         return data, status, developer_token
     fresh = _refresh_developer_token(developer_token)
     if not fresh or fresh == developer_token:
+        if status == 429:
+            # No other token to try, so this is a rate limit after all -
+            # take the waiting path we skipped to ask the question.
+            data, status = _get_json(
+                url, _headers(developer_token, media_user_token), params)
+            if status == 200:
+                _auth_proven.add(developer_token)
         return data, status, developer_token
     data, status = _get_json(url, _headers(fresh, media_user_token), params)
+    if status == 200:
+        _auth_proven.add(fresh)
     return data, status, fresh
 
 

@@ -607,6 +607,116 @@ class TestThrottleBackoff:
         assert len(seen) == 1     # 404 means no lyrics; retrying is pointless
 
 
+class TestARefusedTokenIsNotAlwaysARateLimit:
+    """Apple hands out several developer tokens and they are not
+    interchangeable. A public catalog search - all fetch_developer_token
+    can probe with - accepts more of them than the subscriber-gated
+    lyrics endpoint does, and that endpoint refuses a wrong token with
+    429 and a body reading "Too Many Requests". Read as a rate limit,
+    that costs a 15-minute hold per track and never recovers, which is
+    exactly the shape of the original three-JWT bug."""
+
+    class Reply:
+        def __init__(self, status, payload=None):
+            self.status_code = status
+            self.ok = status == 200
+            self.headers = {}
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    def _reset(self, monkeypatch, cached="first"):
+        import time as _t
+        apple._dev_token["value"] = cached
+        apple._dev_token["at"] = _t.time()
+        monkeypatch.setattr(apple, "_last_refresh", 0.0)
+        monkeypatch.setattr(apple, "_auth_proven", set())
+        monkeypatch.setattr(apple, "_throttle_until", 0.0)
+
+    def test_429_on_an_unproven_token_tries_the_next_one(self, monkeypatch):
+        self._reset(monkeypatch)
+        sent = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            sent.append((headers or {}).get("Authorization"))
+            if sent[-1] == "Bearer first":
+                return self.Reply(429)
+            return self.Reply(200, {"data": [{"attributes": {"ttml": "x"}}]})
+
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False, avoid="": "second")
+        data, status, token = apple._get_json_auth("u", "first", "mut")
+        assert status == 200 and token == "second"
+        assert sent == ["Bearer first", "Bearer second"]
+
+    def test_it_does_not_wait_before_trying_the_other_token(self, monkeypatch):
+        # The whole point: a wrong token must not cost the backoff a real
+        # rate limit would.
+        self._reset(monkeypatch)
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda url, headers=None, params=None, **kw:
+                            self.Reply(429)
+                            if (headers or {}).get("Authorization") ==
+                            "Bearer first" else self.Reply(200, {}))
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False, avoid="": "second")
+        slept = []
+        monkeypatch.setattr(apple.time, "sleep", lambda s: slept.append(s))
+        apple._get_json_auth("u", "first", "mut")
+        assert not slept
+
+    def test_a_real_rate_limit_is_still_waited_out(self, monkeypatch):
+        # Nothing better to switch to, so the 429 means what it says and
+        # the waiting path has to run after all.
+        self._reset(monkeypatch)
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: self.Reply(429))
+        monkeypatch.setattr(apple, "fetch_developer_token",
+                            lambda force=False, avoid="": "first")
+        slept = []
+        monkeypatch.setattr(apple.time, "sleep", lambda s: slept.append(s))
+        _, status, _ = apple._get_json_auth("u", "first", "mut")
+        assert status == 429 and slept
+
+    def test_a_proven_token_is_not_probed_again(self, monkeypatch):
+        # Once a token has answered, probing every track would double the
+        # requests during a genuine rate limit.
+        self._reset(monkeypatch)
+        monkeypatch.setattr(apple, "_auth_proven", {"first"})
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: self.Reply(429))
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda **k:
+                            pytest.fail("rescraped for a proven token"))
+        monkeypatch.setattr(apple.time, "sleep", lambda s: None)
+        _, status, token = apple._get_json_auth("u", "first", "mut")
+        assert status == 429 and token == "first"
+
+    def test_a_token_that_answers_is_remembered(self, monkeypatch):
+        self._reset(monkeypatch)
+        monkeypatch.setattr(apple.requests, "get",
+                            lambda *a, **k: self.Reply(200, {}))
+        apple._get_json_auth("u", "first", "mut")
+        assert "first" in apple._auth_proven
+
+    def test_the_refused_token_is_skipped_when_picking_another(self,
+                                                               monkeypatch):
+        monkeypatch.setattr(apple, "_dev_token", {"value": "", "at": 0.0})
+        monkeypatch.setattr(apple, "_candidate_tokens",
+                            lambda: ["bad", "good"])
+        monkeypatch.setattr(apple, "_token_works", lambda tok: True)
+        assert apple.fetch_developer_token(force=True, avoid="bad") == "good"
+
+    def test_the_only_token_there_is_comes_back_even_if_skipped(self,
+                                                                monkeypatch):
+        # Returning nothing would turn every remaining track into a miss.
+        monkeypatch.setattr(apple, "_dev_token", {"value": "", "at": 0.0})
+        monkeypatch.setattr(apple, "_candidate_tokens", lambda: ["only"])
+        monkeypatch.setattr(apple, "_token_works", lambda tok: True)
+        assert apple.fetch_developer_token(force=True, avoid="only") == "only"
+
+
 class TestStaleDeveloperTokenRefresh:
     """The developer token is cached for six hours and Apple rotates it on
     its own schedule, so a long scan outlives it. A 401 has to cost a
@@ -627,6 +737,8 @@ class TestStaleDeveloperTokenRefresh:
         apple._dev_token["value"] = cached
         apple._dev_token["at"] = _t.time()
         monkeypatch.setattr(apple, "_last_refresh", 0.0)
+        # Module-level, so it would otherwise leak between tests.
+        monkeypatch.setattr(apple, "_auth_proven", set())
 
     def test_401_refreshes_the_token_and_retries(self, monkeypatch):
         self._reset(monkeypatch)
@@ -640,7 +752,7 @@ class TestStaleDeveloperTokenRefresh:
 
         monkeypatch.setattr(apple.requests, "get", fake_get)
         monkeypatch.setattr(apple, "fetch_developer_token",
-                            lambda force=False: "new")
+                            lambda force=False, avoid="": "new")
 
         got = apple.search_song("old", "mut", "us", "Adele", "Hello")
         assert got == "42"                       # recovered, not a miss
@@ -656,7 +768,7 @@ class TestStaleDeveloperTokenRefresh:
         def fake_get(url, headers=None, params=None, **kw):
             return self.Reply(401)              # nothing ever recovers
 
-        def fake_fetch(force=False):
+        def fake_fetch(force=False, avoid=""):
             scrapes.append(force)
             apple._dev_token["value"] = "old"   # Apple hands back the same one
             return "old"
