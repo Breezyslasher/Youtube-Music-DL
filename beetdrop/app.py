@@ -563,6 +563,71 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
     async def api_lyrics_clear_reviews():
         return {"removed": store.clear_reviews()}
 
+    @app.get("/api/lyrics/unmatched", dependencies=[protected])
+    async def api_lyrics_unmatched(limit: int = 50, offset: int = 0):
+        """Tracks with no .lrc at all, for searching by hand.
+
+        The review queue only holds tracks Apple offered something for.
+        A track it returned nothing for has nothing to choose between and
+        is deliberately left out - which also left it with no way for a
+        person to intervene at all. This is that way.
+        """
+        config = effective_config()
+        from .backfill import (iter_audio_missing_lyrics, meta_from_path,
+                               read_track_meta, tidy_track_name)
+
+        def collect():
+            found, seen = [], 0
+            for path in iter_audio_missing_lyrics(config.music_root):
+                seen += 1
+                if seen <= offset:
+                    continue
+                if len(found) >= max(1, min(limit, 200)):
+                    # Keep counting so the total is honest, but stop
+                    # reading tags - that is what costs.
+                    continue
+                artist, title, _album, duration = (
+                    read_track_meta(path) or ("", "", "", None))
+                if not artist or not title:
+                    p_artist, p_title, _ = meta_from_path(path, config.music_root)
+                    artist, title = artist or p_artist, title or p_title
+                found.append({
+                    "path": str(path),
+                    "name": path.name,
+                    "artist": artist,
+                    "title": tidy_track_name(title, artist),
+                    "duration": int(duration or 0),
+                })
+            return found, seen
+
+        tracks, total = await asyncio.to_thread(collect)
+        return {"tracks": tracks, "total": total,
+                "offset": offset, "limit": limit}
+
+    @app.get("/api/lyrics/search", dependencies=[protected])
+    async def api_lyrics_search(q: str, limit: int = 10):
+        """Free-text Apple search, unfiltered, for picking by hand.
+
+        No relevance check: the person searching has already decided to
+        look, and a track whose tags defeated matching is exactly the one
+        where matching's opinion is worth least.
+        """
+        config = effective_config()
+        if not q.strip():
+            return {"results": []}
+
+        def run():
+            developer = apple.fetch_developer_token()
+            rows = apple.search_catalog(
+                developer, config.apple_storefront or "us", q,
+                limit=max(1, min(limit, 25)))
+            return [apple.describe_song(row) for row in rows]
+
+        try:
+            return {"results": await asyncio.to_thread(run)}
+        except apple.AppleError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False,
                               redo_words: bool = False):

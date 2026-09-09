@@ -27,6 +27,9 @@ createApp({
       reviewTotal: 0,
       decidingReview: "",
       clearingReviews: false,
+      unmatched: [],
+      unmatchedTotal: 0,
+      loadingUnmatched: false,
       testingApple: false,
       appleStatus: "",
       appleOk: false,
@@ -362,6 +365,64 @@ createApp({
         this.showToast(body.detail || "saved");
         this.reviews = this.reviews.filter((r) => r.path !== item.path);
         this.reviewTotal = Math.max(0, this.reviewTotal - 1);
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not save that: " + err.message);
+        }
+      } finally {
+        this.decidingReview = "";
+      }
+    },
+
+    async loadUnmatched() {
+      this.loadingUnmatched = true;
+      try {
+        const body = await this.api("/api/lyrics/unmatched?limit=50");
+        this.unmatched = (body.tracks || []).map((track) => Object.assign(
+          {}, track, {
+            // What we would have searched for, editable: a track nothing
+            // was found for usually has tags that are the reason.
+            query: [track.artist, track.title].filter(Boolean).join(" "),
+            results: null,
+            searching: false,
+          }));
+        this.unmatchedTotal = body.total || 0;
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not list them: " + err.message);
+        }
+      } finally {
+        this.loadingUnmatched = false;
+      }
+    },
+
+    async searchLyricsFor(track) {
+      if (!track.query.trim()) return;
+      track.searching = true;
+      try {
+        const body = await this.api(
+          "/api/lyrics/search?q=" + encodeURIComponent(track.query));
+        track.results = body.results || [];
+        if (!track.results.length) this.showToast("Apple returned nothing");
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Search failed: " + err.message);
+        }
+      } finally {
+        track.searching = false;
+      }
+    },
+
+    async useSearchResult(track, songId) {
+      this.decidingReview = track.path;
+      try {
+        const body = await this.api("/api/lyrics/reviews", {
+          method: "POST",
+          body: JSON.stringify({ path: track.path, song_id: songId }),
+        });
+        this.showToast(body.detail || "saved");
+        this.unmatched = this.unmatched.filter((t) => t.path !== track.path);
+        this.unmatchedTotal = Math.max(0, this.unmatchedTotal - 1);
       } catch (err) {
         if (err.message !== "password required") {
           this.showToast("Could not save that: " + err.message);

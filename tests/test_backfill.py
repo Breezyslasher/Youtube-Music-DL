@@ -1012,6 +1012,113 @@ class TestReviewQueueEndpoints:
         assert '"DELETE"' in source
 
 
+class TestSearchingForAMissingTrackByHand:
+    """A track Apple returned nothing for never reaches the review queue -
+    there is nothing to choose between - so until now there was no way to
+    intervene on it at all. Usually the tags are the reason, and a person
+    can see that where matching cannot."""
+
+    def _config(self, tmp_path):
+        config = Config(music_root=tmp_path / "m", scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c", apple_token="t")
+        (config.music_root / "A").mkdir(parents=True)
+        return config
+
+    def _track(self, config, name="Aladdin.opus", lrc=None):
+        path = config.music_root / "A" / name
+        path.write_bytes(b"x")
+        if lrc is not None:
+            path.with_suffix(".lrc").write_text(lrc)
+        return path
+
+    def test_it_lists_only_tracks_with_no_lyrics(self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        missing = self._track(config, "missing.opus")
+        self._track(config, "has.opus", "[00:01.00]la")
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("Orchestra", "Aladdin", "Al", 200))
+        with TestClient(create_app(config)) as client:
+            body = client.get("/api/lyrics/unmatched").json()
+        assert [t["path"] for t in body["tracks"]] == [str(missing)]
+        assert body["total"] == 1
+
+    def test_a_listed_track_carries_what_we_would_have_searched_for(
+            self, tmp_path, monkeypatch):
+        config = self._config(tmp_path)
+        self._track(config, "missing.opus")
+        monkeypatch.setattr(
+            backfill, "read_track_meta",
+            lambda p: ("Orchestra", "Orchestra - Aladdin (Audio)", "Al", 200))
+        with TestClient(create_app(config)) as client:
+            track = client.get("/api/lyrics/unmatched").json()["tracks"][0]
+        # Tidied exactly as the scan tidies it, so what a person is handed
+        # to edit is the query that actually failed - not a cleaner one
+        # that would hide why nothing was found.
+        assert track["artist"] == "Orchestra" and track["title"] == "Aladdin"
+        assert track["duration"] == 200
+
+    def test_the_listing_is_capped_but_the_total_is_not(self, tmp_path,
+                                                        monkeypatch):
+        config = self._config(tmp_path)
+        for i in range(5):
+            self._track(config, "m%d.opus" % i)
+        monkeypatch.setattr(backfill, "read_track_meta",
+                            lambda p: ("A", "T", "Al", 1))
+        with TestClient(create_app(config)) as client:
+            body = client.get("/api/lyrics/unmatched?limit=2").json()
+        assert len(body["tracks"]) == 2 and body["total"] == 5
+
+    def test_search_returns_candidates_unfiltered(self, tmp_path, monkeypatch):
+        from beetdrop import apple
+        # No relevance check here on purpose: the track whose tags defeated
+        # matching is the one where matching's opinion is worth least.
+        config = self._config(tmp_path)
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda *a, **k: "d")
+        monkeypatch.setattr(apple, "search_catalog", lambda *a, **k: [
+            {"id": "1", "attributes": {"name": "A Whole New World",
+                                       "artistName": "Peabo Bryson",
+                                       "albumName": "Aladdin",
+                                       "durationInMillis": 240000,
+                                       "releaseDate": "1992-01-01"}}])
+        with TestClient(create_app(config)) as client:
+            body = client.get("/api/lyrics/search?q=aladdin").json()
+        assert body["results"][0]["title"] == "A Whole New World"
+        assert body["results"][0]["duration"] == 240
+
+    def test_an_empty_query_asks_apple_nothing(self, tmp_path, monkeypatch):
+        from beetdrop import apple
+        config = self._config(tmp_path)
+        monkeypatch.setattr(apple, "fetch_developer_token", lambda *a, **k:
+                            pytest.fail("searched on an empty query"))
+        with TestClient(create_app(config)) as client:
+            assert client.get("/api/lyrics/search?q=%20").json() == {"results": []}
+
+    def test_apple_being_unreachable_is_reported_not_swallowed(
+            self, tmp_path, monkeypatch):
+        from beetdrop import apple
+        config = self._config(tmp_path)
+
+        def boom(*a, **k):
+            raise apple.AppleError("no developer token")
+
+        monkeypatch.setattr(apple, "fetch_developer_token", boom)
+        with TestClient(create_app(config)) as client:
+            assert client.get("/api/lyrics/search?q=aladdin").status_code == 502
+
+    def test_the_page_wires_the_search_up(self):
+        page = (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "index.html").read_text()
+        source = (Path(__file__).parent.parent / "beetdrop" / "static"
+                  / "app.js").read_text()
+        assert 'click="loadUnmatched"' in page
+        assert "searchLyricsFor(track)" in page
+        assert "useSearchResult(track, song.id)" in page
+        for method in ("loadUnmatched()", "searchLyricsFor(", "useSearchResult("):
+            assert method in source, method
+        assert "/api/lyrics/unmatched" in source
+        assert "/api/lyrics/search?q=" in source
+
+
 class TestWordCoverageEstimate:
     """Answering "is an upgrade pass worth running?" by running it costs
     two Apple calls per track and hours of waiting. A random sample
