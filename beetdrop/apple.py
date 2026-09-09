@@ -527,6 +527,34 @@ def looks_like_the_track(song, artist: str, title: str) -> bool:
     return True
 
 
+def search_catalog(developer_token: str, storefront: str, term: str,
+                   limit: int = 10) -> list:
+    """Everything Apple returns for a free-text search, unfiltered.
+
+    Matching exists to keep a wrong song out of the library unattended.
+    A person typing a query has already decided to look, and the check
+    that helps a scan only gets in their way here - a track whose tags
+    are wrong enough that matching found nothing is exactly the one to
+    hand over whole.
+
+    Anonymous, like every other catalog search: it spends none of the
+    account's allowance.
+    """
+    if not term.strip():
+        return []
+    data, status, _ = _get_json_auth(
+        SEARCH_URL % storefront, developer_token, "",
+        {"term": term.strip(), "types": "songs", "limit": str(int(limit))})
+    if status in UNAVAILABLE_STATUS:
+        raise AppleUnavailable("catalog search failed (status %s)" % status)
+    if not data:
+        return []
+    try:
+        return list(data["results"]["songs"]["data"])
+    except (KeyError, TypeError):
+        return []
+
+
 def describe_song(song) -> dict:
     """A catalog row reduced to what a person needs to judge it by."""
     attributes = (song or {}).get("attributes") or {}

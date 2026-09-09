@@ -375,6 +375,52 @@
           on the next scan.
         </p>
       </details>
+      <button type="button" @click="loadUnmatched" :disabled="loadingUnmatched">
+        {{ loadingUnmatched ? 'Listing...' : 'Find lyrics by hand' }}
+      </button>
+      <p class="note">
+        Tracks with no .lrc at all. The review list above only holds ones
+        Apple offered something for - if it found nothing, usually the tags
+        are the reason, so search for the song yourself and pick it. Your
+        pick is remembered and a later scan will not undo it.
+      </p>
+      <details v-if="unmatched.length" class="joblog" open>
+        <summary>{{ unmatchedTotal }} track(s) with no lyrics</summary>
+        <div v-for="track in unmatched" :key="track.path" class="review">
+          <p class="review-track">
+            <strong>{{ track.artist || '?' }} &mdash; {{ track.title || track.name }}</strong>
+            <span class="note" v-if="track.duration"> ({{ fmtDuration(track.duration) }})</span>
+          </p>
+          <p class="note">{{ track.name }}</p>
+          <input type="search" v-model="track.query"
+                 @keyup.enter="searchLyricsFor(track)"
+                 placeholder="artist and song to search Apple for">
+          <button type="button" :disabled="track.searching"
+                  @click="searchLyricsFor(track)">
+            {{ track.searching ? 'Searching...' : 'Search Apple' }}
+          </button>
+          <button v-for="song in (track.results || [])" :key="song.id"
+                  type="button" class="candidate"
+                  :disabled="decidingReview === track.path"
+                  @click="useSearchResult(track, song.id)">
+            {{ song.artist }} &mdash; {{ song.title }}
+            <span class="note">
+              {{ song.album }}{{ song.year ? ' (' + song.year + ')' : '' }},
+              {{ fmtDuration(song.duration) }}
+            </span>
+          </button>
+          <p class="note" v-if="track.results && !track.results.length">
+            Nothing came back for that. Try a shorter query - just the song
+            title, or the artist and two or three words of it.
+          </p>
+          <button type="button" class="retry"
+                  :disabled="decidingReview === track.path"
+                  @click="useSearchResult(track, '')">Skip this one for good</button>
+        </div>
+        <p class="note" v-if="unmatchedTotal > unmatched.length">
+          Showing the first {{ unmatched.length }} of {{ unmatchedTotal }}.
+        </p>
+      </details>
       <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
         {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
       </button>

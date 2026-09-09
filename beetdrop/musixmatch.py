@@ -104,7 +104,20 @@ def _find_subtitle_body(obj) -> Optional[str]:
     return None
 
 
-def _query(params: dict) -> Optional[str]:
+def _query(params: dict, artist: str = "", title: str = "") -> Optional[str]:
+    """The LRC subtitle from one macro call, if it is for the right track.
+
+    Probed against a real account, this endpoint answered every query -
+    "Imagine Dragons - Underdog" included - with the same track (Drake -
+    NOKIA) and the same 5,457-character body of invented words. Ten
+    sidecars of it reached a library before the placeholder guard caught
+    them, and that guard is uniform timing: a last line of defence that
+    only works because the junk happens to be evenly spaced.
+
+    So the track is checked before its subtitle is taken. The Apple path
+    has done this since it accepted a different band's song; this one
+    never did.
+    """
     try:
         response = requests.get(SUBTITLES_URL, params=params,
                                 headers={"User-Agent": UA}, timeout=TIMEOUT)
@@ -117,6 +130,11 @@ def _query(params: dict) -> Optional[str]:
             return None
         data = response.json()
     except ValueError:
+        return None
+    track = _find_track(data)
+    if track is not None and not looks_like_the_track(artist, title, {
+            "artist": track.get("artist_name"),
+            "title": track.get("track_name")}):
         return None
     body = _find_subtitle_body(data)
     if body and _LRC_TIMESTAMP.search(body):
@@ -441,7 +459,7 @@ def fetch_synced(token: str, artist: str, title: str,
     attempts.append(dict(base))
 
     for params in attempts:
-        lrc = _query(params)
+        lrc = _query(params, artist, title)
         if lrc:
             return lrc
     return None

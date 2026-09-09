@@ -535,6 +535,66 @@ def cmd_apple_explore(args, config: Config) -> int:
     return 0
 
 
+def cmd_plex_check(args, config: Config) -> int:
+    """Would Plex's metadata find lyrics the file's own tags cannot?
+
+    Plex has already matched every track against its own agent, so it
+    holds a clean artist/title where a downloaded file may hold anything.
+    Measured against *paths*, Plex looks far better - but Beetdrop reads
+    embedded tags first and only falls back to the path, so that
+    comparison flatters it. This reads the tags themselves.
+
+    Read-only: nothing is fetched, nothing is written.
+    """
+    from . import __version__
+    from .backfill import iter_audio_missing_lyrics, read_track_meta
+    from .plexmeta import build_index, compare_tags, load_export
+
+    print("beetdrop %s" % __version__)
+    try:
+        tracks = load_export(args.csv)
+    except OSError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+    if not tracks:
+        print("error: no track rows found in that export - it needs a "
+              "locations column and a title column", file=sys.stderr)
+        return 1
+    index = build_index(tracks)
+    print("read %d track(s) from Plex" % len(tracks))
+
+    files = list(iter_audio_missing_lyrics(config.music_root)
+                 if args.missing_only else
+                 sorted(p for p in config.music_root.rglob("*")
+                        if p.is_file() and p.suffix.lower() in
+                        {".opus", ".m4a", ".mp3", ".flac", ".ogg", ".wav"}))
+    if not files:
+        print("no tracks to check")
+        return 0
+    print("checking %s of %d library file(s)..." % (
+        args.sample if 0 < args.sample < len(files) else "all", len(files)))
+
+    result = compare_tags(files, index, read_track_meta, sample=args.sample)
+    print()
+    print("%d checked, %d joined to a Plex row" % (result.checked, result.joined))
+    if not result.joined:
+        print("\nNothing joined. Plex's paths and this container's share no "
+              "tail - check the export is for the same library.")
+        return 2
+    print("  tags already agree with Plex: %d" % result.same)
+    print("  differ only in punctuation:   %d" % result.cosmetic)
+    print("  same song, artist spelled differently: %d" % result.artist_only)
+    print("  a genuinely different title:  %d" % result.different_title)
+    print("  file has no usable tags:      %d" % result.untagged)
+    print("\nPlex would change the search for %.0f%% of the joined tracks."
+          % result.gain_pct)
+    if result.examples:
+        print("\nWhat that looks like:")
+        for line in result.examples[:args.show]:
+            print("  " + line)
+    return 0
+
+
 def cmd_richsync_raw(args, config: Config) -> int:
     """Show exactly what Musixmatch answers for one track.
 
@@ -943,6 +1003,23 @@ def main(argv=None) -> int:
                         help="print what Musixmatch matched each track to, "
                              "so a wrong match is visible")
     p_rich.set_defaults(func=cmd_richsync_probe)
+
+    p_plex = sub.add_parser(
+        "plex-check",
+        help="compare your files' own tags against a Plex CSV export, to "
+             "see whether Plex's metadata would find lyrics the tags cannot")
+    p_plex.add_argument("csv", nargs="+", help="Plex CSV export file(s)")
+    p_plex.add_argument("--sample", type=int, default=200,
+                        help="how many library files to read tags from "
+                             "(0 = all, default 200)")
+    p_plex.add_argument("--show", type=int, default=15,
+                        help="how many differences to print (default 15)")
+    p_plex.add_argument("--missing-only", action="store_true", default=True,
+                        help="only tracks with no .lrc yet (the default)")
+    p_plex.add_argument("--all-tracks", dest="missing_only",
+                        action="store_false",
+                        help="check every track, not only those missing lyrics")
+    p_plex.set_defaults(func=cmd_plex_check)
 
     p_rraw = sub.add_parser(
         "richsync-raw",
