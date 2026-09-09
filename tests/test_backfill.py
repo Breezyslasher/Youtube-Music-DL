@@ -485,6 +485,7 @@ class TestLyricsStats:
         assert body["word_pct"] == 100.0
 
 
+@pytest.mark.skipif(not have_ffmpeg(), reason="ffmpeg unavailable")
 class TestRedoWordsPass:
     """Apple times syllables, and we used to put a space between every
     one, so "Tumble" was written "Tum ble". A finished .lrc no longer
