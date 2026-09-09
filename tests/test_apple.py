@@ -1141,3 +1141,80 @@ class TestWrongSongIsRejected:
                             200000)]
         assert apple._best_by_duration(
             songs, 200, "Electric Light Orchestra", "Starlight") is None
+
+
+class TestQueryIsRetriedSimplified:
+    """From a real library: 348 of 598 refusals were "a different song or
+    artist", meaning Apple answered with something unrelated - our query's
+    fault, not Apple's. Titles like "Where Are You Now (Offiicial Audio)"
+    and "MONSTER MASH - (Pop Punk Halloween cover by ...)" went into the
+    search term verbatim. LRCLIB has retried with a simplified query for
+    ages; this asked once."""
+
+    def setup_method(self):
+        apple._dev_token["value"] = "devtok"
+        apple._dev_token["at"] = 9e18
+        apple._throttle_until = 0.0
+
+    def _serve(self, monkeypatch, answers):
+        """answers: {search term -> song row or None}."""
+        terms = []
+
+        def fake_get(url, headers=None, params=None, **kw):
+            term = (params or {}).get("term", "")
+            terms.append(term)
+            song = answers.get(term)
+            return FakeResp({"results": {"songs": {"data": [song] if song else []}}})
+        monkeypatch.setattr(apple.requests, "get", fake_get)
+        return terms
+
+    def _song(self, name, artist, ms=200000):
+        return {"id": "1",
+                "attributes": {"name": name, "artistName": artist,
+                               "durationInMillis": ms},
+                "relationships": {"syllable-lyrics": {"data": [
+                    {"attributes": {"ttml": WORD_TTML}}]}}}
+
+    def test_a_junk_parenthetical_is_dropped_on_the_retry(self, monkeypatch):
+        terms = self._serve(monkeypatch, {
+            "Justin Bieber Where Are You Now (Offiicial Audio)": None,
+            "Justin Bieber Where Are You Now":
+                self._song("Where Are You Now", "Justin Bieber")})
+        lrc = apple.fetch_synced("mut", "Justin Bieber",
+                                 "Where Are You Now (Offiicial Audio)", 200)
+        assert lrc
+        assert len(terms) == 2      # the raw term first, then the simplified
+
+    def test_a_featured_credit_is_dropped_on_the_retry(self, monkeypatch):
+        self._serve(monkeypatch, {
+            "Idina Menzel featuring AURORA Into the Unknown": None,
+            "Idina Menzel Into the Unknown":
+                self._song("Into the Unknown", "Idina Menzel")})
+        assert apple.fetch_synced("mut", "Idina Menzel featuring AURORA",
+                                  "Into the Unknown", 200)
+
+    def test_one_request_when_the_first_try_works(self, monkeypatch):
+        terms = self._serve(monkeypatch, {
+            "Green Day Geek Stink Breath":
+                self._song("Geek Stink Breath", "Green Day")})
+        assert apple.fetch_synced("mut", "Green Day", "Geek Stink Breath", 200)
+        assert len(terms) == 1      # no needless second search
+
+    def test_nothing_to_simplify_means_no_second_request(self, monkeypatch):
+        terms = self._serve(monkeypatch, {"A S": None})
+        # Nothing offered, so nothing to choose between and nothing to
+        # simplify: one request, a plain miss, no review queued.
+        assert apple.fetch_synced("mut", "A", "S", 200) is None
+        assert len(terms) == 1
+
+    def test_the_retry_reports_what_it_refused(self, monkeypatch):
+        """The candidates a person sees come from the last attempt, so
+        they match the query that actually ran."""
+        wrong = self._song("Something Else", "Another Band")
+        self._serve(monkeypatch, {
+            "Jonathan Young MONSTER MASH (Pop Punk cover)": wrong,
+            "Jonathan Young MONSTER MASH": wrong})
+        with pytest.raises(apple.NeedsChoice) as refused:
+            apple.fetch_synced("mut", "Jonathan Young",
+                               "MONSTER MASH (Pop Punk cover)", 200)
+        assert refused.value.candidates[0]["title"] == "Something Else"

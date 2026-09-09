@@ -56,6 +56,9 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 _JWT = re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}")
 _ASSET = re.compile(r'src="(/assets/[^"]+\.js)"')
+# "(feat. X)", "(Official Audio)", "(Live cover by ...)" - a trailing
+# parenthetical the catalogue does not carry in its track name.
+_PAREN_SUFFIX = re.compile(r"\s*[\(\[][^)\]]*[\)\]]\s*$")
 _ARTIST_SEP = re.compile(
     r"\s*(?:,|;|&|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b)\s*", re.I)
 
@@ -598,6 +601,29 @@ def lyrics_for_song(developer_token: str, media_user_token: str,
     return ttml_to_lrc(ttml, word_by_word=word_by_word) if ttml else None
 
 
+def _simplify_title(title: str) -> str:
+    """"Song (Official Audio)" / "Song (Live cover by X)" -> "Song"."""
+    simple = _PAREN_SUFFIX.sub("", title or "").strip()
+    return simple or (title or "").strip()
+
+
+def _search_once(developer_token: str, media_user_token: str, storefront: str,
+                 artist: str, title: str, duration_seconds):
+    data, status, _ = _get_json_auth(
+        SEARCH_URL % storefront, developer_token, media_user_token,
+        {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
+         "limit": "5", SEARCH_INCLUDE: "syllable-lyrics"})
+    if status in UNAVAILABLE_STATUS:
+        raise AppleUnavailable("catalog search failed (status %s)" % status)
+    if not data:
+        return None, []
+    try:
+        songs = data["results"]["songs"]["data"]
+    except (KeyError, TypeError):
+        return None, []
+    return choose_song(songs, duration_seconds, artist, title)
+
+
 def search_with_lyrics(developer_token: str, media_user_token: str,
                        storefront: str, artist: str, title: str,
                        duration_seconds: Optional[int] = None):
@@ -612,20 +638,26 @@ def search_with_lyrics(developer_token: str, media_user_token: str,
     the same as the track having none: the caller should fall back to
     fetching by id rather than record a miss.
     """
-    data, status, _ = _get_json_auth(
-        SEARCH_URL % storefront, developer_token, media_user_token,
-        {"term": ("%s %s" % (artist, title)).strip(), "types": "songs",
-         "limit": "5", SEARCH_INCLUDE: "syllable-lyrics"})
-    if status in UNAVAILABLE_STATUS:
-        raise AppleUnavailable("catalog search failed (status %s)" % status)
-    if not data:
-        return None, None, []
-    try:
-        songs = data["results"]["songs"]["data"]
-    except (KeyError, TypeError):
-        return None, None, []
-    best, rejected = choose_song(songs, duration_seconds, artist, title)
-    return best, _ttml_of(best), rejected
+    # Two attempts at most, and the second only when the first found
+    # nothing usable. LRCLIB has retried with a simplified query for ages
+    # while this asked once with whatever the tag said: a title carrying
+    # "(Official Audio)" or "(Pop Punk cover by ...)" goes into the term
+    # verbatim and Apple answers with something unrelated, which then gets
+    # refused as "a different song" - our query's fault, not Apple's.
+    attempts = [(artist, title)]
+    loosened = (_primary_artist(artist), _simplify_title(title))
+    if loosened != (artist, title):
+        attempts.append(loosened)
+
+    rejected = []
+    for one_artist, one_title in attempts:
+        best, refused = _search_once(developer_token, media_user_token,
+                                     storefront, one_artist, one_title,
+                                     duration_seconds)
+        if best is not None:
+            return best, _ttml_of(best), refused
+        rejected = refused or rejected
+    return None, None, rejected
 
 
 def fetch_ttml(developer_token: str, media_user_token: str, storefront: str,
