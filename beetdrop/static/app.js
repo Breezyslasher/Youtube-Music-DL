@@ -403,6 +403,7 @@ createApp({
           ? "Re-rendering every word-by-word sidecar"
           : upgrade
             ? "Upgrading existing lyrics to word-by-word"
+            : refresh
               ? "Deleting bad lyrics and re-fetching"
               : "Library lyrics scan started");
       } catch (err) {
