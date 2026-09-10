@@ -648,8 +648,11 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   width: 44px;
   height: 44px;
   border-radius: var(--radius-xs);
+  /* The stripe is the empty state, and stays visible behind a cover
+     that is still loading. */
   background: repeating-linear-gradient(135deg, #191d21 0 6px, #14181b 6px 12px);
 }
+.librow img.art { object-fit: cover; display: block; }
 .librow .art.review {
   background: repeating-linear-gradient(135deg, #2a221a 0 6px, #1d1812 6px 12px);
 }
@@ -785,6 +788,19 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   color: var(--dim);
   margin-top: 6px;
 }
+
+/* A note's inline action: reads as a link, behaves as a button. */
+.linkbtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  min-height: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.warntext { color: var(--warn); }
 
 /* Job card actions sit on one row rather than stacking full width. */
 .jobactions { display: flex; flex-wrap: wrap; gap: 8px; }

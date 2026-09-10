@@ -258,7 +258,10 @@
     </div>
     <template v-for="album in libraryItems" :key="album.id">
       <div class="librow" @click="selectAlbum(album)">
-        <span class="art" :class="{review: !album.verified}"></span>
+        <img v-if="album.has_cover && !coverBroken[album.id]" class="art"
+             :src="coverUrl(album)" alt="" loading="lazy" decoding="async"
+             @error="coverBroken[album.id] = true">
+        <span v-else class="art" :class="{review: !album.verified}"></span>
         <span class="col-name">
           <span class="name" :class="{'title-review': !album.verified}">{{ album.album }}</span>
           <span v-if="!album.verified" class="pill">_review</span>
@@ -285,7 +288,8 @@
             <span class="grow">{{ track.name }}</span>
             <span class="sub">
               <span class="lyricdot" :class="track.lyrics"></span>{{ track.lyrics }}<template
-                v-if="track.lyrics_source"> &middot; {{ sourceName(track.lyrics_source) }}</template>
+                v-if="track.lyrics_source"> &middot; {{ sourceName(track.lyrics_source) }}</template><template
+                v-if="track.lyrics_timing"> &middot; <span class="warntext">{{ track.lyrics_timing }}</span></template>
             </span>
           </div>
         </div>
@@ -344,7 +348,17 @@
           <span><i class="swatch" style="background:var(--panel-3)"></i>{{ stats.lyrics.none.toLocaleString() }} none</span>
         </div>
         <p v-if="stats.lyrics.bad_timing" class="note">
-          {{ stats.lyrics.bad_timing }} have word timing that jumps backwards mid-line.
+          {{ stats.lyrics.bad_timing }} have word timing that jumps backwards
+          mid-line &mdash; the upgrade pass repairs those.
+        </p>
+        <p v-if="stats.lyrics.crowded" class="note">
+          {{ stats.lyrics.crowded }} have words packed too tight to be sung
+          &mdash; a line with more words than its timing can hold. They pass
+          every other check, so nothing else finds them.
+          <button type="button" class="linkbtn"
+                  @click="libraryFilter = 'crowded'; goTo('library'); loadLibrary()">
+            Show them in Library
+          </button>
         </p>
 
         <template v-if="stats.lyrics.by_source && stats.lyrics.by_source.length">

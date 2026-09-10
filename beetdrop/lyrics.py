@@ -231,6 +231,41 @@ def has_backwards_word_timing(lrc: str) -> bool:
     return False
 
 
+# A word nobody can sing. Two tags this close describe the same instant,
+# so a highlighter showing one of them skips the other.
+_COLLAPSED = 0.02
+# Tight but conceivable once - a contraction, a fast rap line. Several in
+# one line is not fast singing, it is words with nowhere to go.
+_TIGHT = 0.05
+_TIGHT_ALLOWED = 1
+
+
+def has_crowded_word_timing(lrc: str) -> bool:
+    """True when some line's word tags are packed too tight to be real.
+
+    The defect a forced aligner leaves when a line has more words than
+    its window can hold: the tail gets pinned at whatever minimum step
+    the writer enforces. The result passes every other check - the times
+    increase, the line timing is real, the words are right - and reads as
+    a sound word-by-word file.
+
+    Backwards gaps are ignored here. They are a different fault with its
+    own check, and counting them twice would make one bad file look like
+    two problems.
+    """
+    for line in (lrc or "").splitlines():
+        times = [int(m[0]) * 60 + float(m[1].replace(":", "."))
+                 for m in _WORD_TAG.findall(line)]
+        gaps = [b - a for a, b in zip(times, times[1:]) if b >= a]
+        if not gaps:
+            continue
+        if min(gaps) <= _COLLAPSED:
+            return True
+        if sum(1 for gap in gaps if gap < _TIGHT) > _TIGHT_ALLOWED:
+            return True
+    return False
+
+
 def _primary_artist(artist: str) -> str:
     """"Billie Eilish, Khalid" -> "Billie Eilish"; the name a lyrics
     database files the track under."""

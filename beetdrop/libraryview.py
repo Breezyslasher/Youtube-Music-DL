@@ -18,10 +18,10 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
-from .lyrics import (has_backwards_word_timing, has_word_timing,
-                     looks_synthetic, lyric_source_label)
+from .lyrics import (has_backwards_word_timing, has_crowded_word_timing,
+                     has_word_timing, looks_synthetic, lyric_source_label)
 
 AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
 VIDEO_EXTS = (".mp4", ".mkv", ".webm")
@@ -60,28 +60,52 @@ def album_path(root: Path, ident: str) -> Optional[Path]:
     return candidate
 
 
-def read_sidecar(sidecar: Path):
-    """(state, source) for one track: what the .lrc is and who wrote it.
+class Sidecar(NamedTuple):
+    """Everything one sidecar has to say, from a single read.
 
-    One read for both. The source comes from the [re:] tag Beetdrop
-    stamps on the way out - or from another tool's, when it named itself
-    the same way. A file with no tag reports "" rather than a guess.
+    It used to take two walks of the library and two reads of every .lrc
+    to get this: once here for the state, and again in bad_timing_count
+    for the word timing. Both parse the same text.
+    """
+
+    state: str = "none"        # word | line | junk | none
+    source: str = ""           # who wrote it, per its [re:] tag
+    backwards: bool = False    # word tags run backwards mid-line
+    crowded: bool = False      # word tags packed too tight to be real
+
+    @property
+    def timing(self) -> str:
+        """The one word for what is wrong with the timing, if anything."""
+        if self.backwards:
+            return "backwards"
+        return "crowded" if self.crowded else ""
+
+
+def read_sidecar(sidecar: Path) -> Sidecar:
+    """What one track's .lrc is, who wrote it, and whether it is sound.
+
+    The source comes from the [re:] tag Beetdrop stamps on the way out -
+    or from another tool's, when it named itself the same way. A file
+    with no tag reports "" rather than a guess.
     """
     if not sidecar.is_file():
-        return "none", ""
+        return Sidecar()
     try:
         text = sidecar.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return "none", ""
+        return Sidecar()
     source = lyric_source_label(text)
     if looks_synthetic(text):
-        return "junk", source
-    return ("word" if has_word_timing(text) else "line"), source
+        return Sidecar("junk", source)
+    if not has_word_timing(text):
+        return Sidecar("line", source)
+    return Sidecar("word", source, has_backwards_word_timing(text),
+                   has_crowded_word_timing(text))
 
 
 def lyric_state(sidecar: Path) -> str:
     """"word", "line", "junk" or "none" for one track's sidecar."""
-    return read_sidecar(sidecar)[0]
+    return read_sidecar(sidecar).state
 
 
 def _split_year(name: str):
@@ -117,6 +141,10 @@ class Album:
     added_at: float = 0.0
     verified: bool = True
     has_cover: bool = False
+    # Word-level sidecars whose timing is not sound. Counted here so the
+    # Stats totals cost nothing beyond the walk already being done.
+    backwards_timing: int = 0
+    crowded_timing: int = 0
 
     @property
     def incomplete(self) -> bool:
@@ -154,11 +182,14 @@ def scan_albums(root: Path) -> list:
         newest = 0.0
         size = 0
         numbers = []
+        backwards = crowded = 0
         for track in tracks:
-            state, source = read_sidecar(track.with_suffix(".lrc"))
-            counts[state] += 1
-            if state != "none":
-                sources[source] += 1
+            found = read_sidecar(track.with_suffix(".lrc"))
+            counts[found.state] += 1
+            if found.state != "none":
+                sources[found.source] += 1
+            backwards += found.backwards
+            crowded += found.crowded
             try:
                 info = track.stat()
                 size += info.st_size
@@ -179,11 +210,13 @@ def scan_albums(root: Path) -> list:
                            for t in tracks).most_common(1)[0][0],
             size_bytes=size, added_at=newest, verified=not in_review,
             has_cover=any((folder / name).is_file() for name in COVER_NAMES),
+            backwards_timing=backwards, crowded_timing=crowded,
         ))
     return albums
 
 
-FILTERS = ("missing_lyrics", "line_only", "unverified", "incomplete", "junk")
+FILTERS = ("missing_lyrics", "line_only", "unverified", "incomplete", "junk",
+           "backwards", "crowded")
 
 
 def matches_filter(album: Album, wanted: str) -> bool:
@@ -201,6 +234,10 @@ def matches_filter(album: Album, wanted: str) -> bool:
         return album.incomplete
     if wanted == "junk":
         return album.lyrics.get("junk", 0) > 0
+    if wanted == "backwards":
+        return album.backwards_timing > 0
+    if wanted == "crowded":
+        return album.crowded_timing > 0
     return True
 
 
@@ -227,12 +264,13 @@ def album_tracks(folder: Path) -> list:
             size = path.stat().st_size
         except OSError:
             size = 0
-        state, source = read_sidecar(path.with_suffix(".lrc"))
+        found = read_sidecar(path.with_suffix(".lrc"))
         rows.append({
             "name": path.name, "path": str(path),
             "number": _track_number(path.name),
-            "lyrics": state,
-            "lyrics_source": source,
+            "lyrics": found.state,
+            "lyrics_source": found.source,
+            "lyrics_timing": found.timing,
             "size_bytes": size,
             "format": path.suffix.lstrip(".").lower(),
         })
@@ -244,19 +282,6 @@ def count_videos(root: Path) -> int:
                if path.is_file() and path.suffix.lower() in VIDEO_EXTS)
 
 
-def bad_timing_count(root: Path) -> int:
-    """Sidecars whose word timing jumps backwards mid-line."""
-    total = 0
-    for path in root.rglob("*.lrc"):
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        if has_word_timing(text) and has_backwards_word_timing(text):
-            total += 1
-    return total
-
-
 def summarise(albums: list) -> dict:
     """The library totals the Stats screen leads with."""
     lyrics = Counter()
@@ -264,6 +289,7 @@ def summarise(albums: list) -> dict:
     formats: dict = {}
     artists = set()
     tracks = size = incomplete = review = 0
+    backwards = crowded = 0
     for album in albums:
         tracks += album.track_count
         size += album.size_bytes
@@ -277,6 +303,8 @@ def summarise(albums: list) -> dict:
             lyrics[state] += count
         for name, count in (album.lyric_sources or {}).items():
             sources[name or "untagged"] += count
+        backwards += album.backwards_timing
+        crowded += album.crowded_timing
         entry = formats.setdefault(album.format, {"ext": album.format,
                                                   "count": 0, "bytes": 0})
         entry["count"] += album.track_count
@@ -298,6 +326,11 @@ def summarise(albums: list) -> dict:
             # Untagged last whatever its size: it is a backlog, not a
             # source, and reading it as the biggest provider would be
             # exactly the wrong conclusion.
+            "bad_timing": backwards,
+            # Word tags packed too tight to be real - what a forced
+            # aligner leaves on a line with more words than its window
+            # holds. Passes every other check, so nothing found these.
+            "crowded": crowded,
             "by_source": [{"source": name, "count": count}
                           for name, count in sorted(
                               sources.most_common(),

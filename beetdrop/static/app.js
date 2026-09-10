@@ -68,6 +68,9 @@ const app = createApp({
       librarySort: "added",
       loadingLibrary: false,
       selectedAlbum: null,
+      // Albums whose cover.jpg would not load. Falling back to the
+      // stripe placeholder beats a broken-image icon per row.
+      coverBroken: {},
       albumTracks: [],
       stats: null,
       loadingStats: false,
@@ -164,6 +167,8 @@ const app = createApp({
         { key: "unverified", label: "Unverified", count: counts.unverified, warn: true },
         { key: "incomplete", label: "Gaps in numbering", count: counts.incomplete, warn: true },
         { key: "junk", label: "Junk lyrics", count: counts.junk },
+        { key: "backwards", label: "Backwards word timing", count: counts.backwards, warn: true },
+        { key: "crowded", label: "Crowded word timing", count: counts.crowded, warn: true },
       ];
       Object.keys(this.libraryFormats || {}).forEach((ext) => {
         chips.push({ key: "format:" + ext, label: ext, count: this.libraryFormats[ext] });
@@ -286,6 +291,7 @@ const app = createApp({
     async loadLibrary() {
       this.loadingLibrary = true;
       this.selectedAlbum = null;
+      this.coverBroken = {};
       try {
         const query = "?filter=" + encodeURIComponent(this.libraryFilter)
           + "&sort=" + encodeURIComponent(this.librarySort)
@@ -303,6 +309,14 @@ const app = createApp({
       } finally {
         this.loadingLibrary = false;
       }
+    },
+
+    coverUrl(album) {
+      // The album's mtime rides in the query so a replaced cover comes
+      // back under a new URL; the response is then cached for a week
+      // rather than revalidated once per row on every visit.
+      return "/api/library/album/" + encodeURIComponent(album.id)
+        + "/cover?v=" + Math.round(album.added_at || 0);
     },
 
     albumLyricState(album) {

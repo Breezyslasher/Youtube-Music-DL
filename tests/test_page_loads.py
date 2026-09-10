@@ -79,8 +79,28 @@ def browser_path():
 
 
 @pytest.fixture(scope="module")
-def browser(tmp_path_factory):
-    """One browser and one server for the module; a fresh tab per test.
+def engine():
+    """One Chromium for the module.
+
+    Exactly one, deliberately: entering sync_playwright() twice in a
+    process fails with "Sync API inside the asyncio loop", so every
+    fixture that wants a browser shares this and brings its own server.
+    """
+    found = browser_path()
+    if not found:
+        pytest.skip("no chromium binary to launch")
+    with playwright_api.sync_playwright() as pw:
+        try:
+            started = pw.chromium.launch(executable_path=found)
+        except Exception as exc:
+            pytest.skip("chromium would not start: %s" % exc)
+        yield started
+        started.close()
+
+
+@pytest.fixture(scope="module")
+def browser(engine, tmp_path_factory):
+    """The browser against an empty library; a fresh tab per test.
 
     Sharing a tab meant an overlay left open by one test intercepted the
     next test's clicks - the tests failed each other rather than the app.
@@ -90,17 +110,8 @@ def browser(tmp_path_factory):
     music.mkdir()
     config = Config(music_root=music, scratch_root=tmp / "s",
                     config_dir=tmp / "c")
-    found = browser_path()
-    if not found:
-        pytest.skip("no chromium binary to launch")
     with Served(config) as served:
-        with playwright_api.sync_playwright() as pw:
-            try:
-                engine = pw.chromium.launch(executable_path=found)
-            except Exception as exc:
-                pytest.skip("chromium would not start: %s" % exc)
-            yield engine, served.url
-            engine.close()
+        yield engine, served.url
 
 
 def open_tab(engine, url, **options):
@@ -133,6 +144,83 @@ def phone(browser):
     tab, problems = open_tab(engine, url, viewport={"width": 412, "height": 915})
     yield tab, problems
     tab.close()
+
+
+def tiny_png(size=64, rgb=(200, 90, 70)):
+    """A real PNG, so a browser can decode it and report its size."""
+    import struct
+    import zlib
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    raw = b"".join(b"\x00" + bytes(rgb) * size for _ in range(size))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+@pytest.fixture(scope="module")
+def stocked(engine, tmp_path_factory):
+    """A browser against a library that actually has an album in it.
+
+    The main fixture serves an empty library, which is what most of
+    these want - and is exactly why nobody noticed that Library rows
+    never rendered artwork. There were no rows.
+    """
+    tmp = tmp_path_factory.mktemp("stocked")
+    album = tmp / "music" / "Dolly Parton" / "9 to 5 (1980)"
+    album.mkdir(parents=True)
+    (album / "01 - Track.opus").write_bytes(b"x" * 2048)
+    (album / "cover.png").write_bytes(tiny_png())
+    bare = tmp / "music" / "Nobody" / "No Cover (2004)"
+    bare.mkdir(parents=True)
+    (bare / "01 - Track.opus").write_bytes(b"x" * 2048)
+    config = Config(music_root=tmp / "music", scratch_root=tmp / "s",
+                    config_dir=tmp / "c")
+    with Served(config) as served:
+        yield engine, served.url
+
+
+class TestLibraryArtwork:
+    """Covers render, which is not the same as the bytes being available.
+
+    The endpoint can be perfect and the rows still blank: for a long
+    time nothing served cover.jpg at all, so the markup had nothing to
+    point at and always drew the placeholder. Asserting a decoded image
+    is the only version of this test that would have failed then.
+    """
+
+    def rows(self, stocked):
+        engine, url = stocked
+        tab, problems = open_tab(engine, url)
+        tab.click(".sidebar .navitem:has-text('Library')")
+        tab.locator(".librow").first.wait_for(timeout=8000)
+        return tab, problems
+
+    def test_a_cover_on_disk_is_decoded_by_the_browser(self, stocked):
+        tab, problems = self.rows(stocked)
+        try:
+            handle = tab.locator("img.art").first
+            handle.wait_for(timeout=8000)
+            size = tab.eval_on_selector(
+                "img.art",
+                "el => el.complete && [el.naturalWidth, el.naturalHeight]")
+            assert size and size[0] > 0, "the cover did not load: %s" % (size,)
+            assert not problems, problems[:3]
+        finally:
+            tab.close()
+
+    def test_an_album_without_one_still_shows_the_placeholder(self, stocked):
+        # Never a broken-image icon, and never an empty box either.
+        tab, _ = self.rows(stocked)
+        try:
+            assert tab.locator("img.art").count() == 1
+            assert tab.locator("span.art").count() == 1
+        finally:
+            tab.close()
 
 
 class TestThePageRuns:
