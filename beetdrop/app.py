@@ -920,6 +920,27 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
                     "filed" if moved else "re-tagged in place",
                     outcome.tags.artist, outcome.tags.title)}
 
+    @app.post("/api/lyrics/tag-sources", dependencies=[protected])
+    async def api_lyrics_tag_sources():
+        """Tag sidecars written before Beetdrop recorded a source.
+
+        Offline and quick - it rewrites one header line and asks nothing
+        of any provider - so it answers directly rather than going
+        through the queue.
+
+        It never guesses. Apple is the only source with per-word timing,
+        so a word-level sidecar can only have come from Apple. A
+        line-level one is left untagged: all three sources produce those
+        and the file does not say which, and a plausible source written
+        into the file would later be read as a fact.
+        """
+        from .backfill import tag_existing_sources
+
+        config = effective_config()
+        found = await asyncio.to_thread(tag_existing_sources, config.music_root)
+        return {"total": found.total, "already": found.already,
+                "tagged": found.tagged, "unknowable": found.unknowable}
+
     @app.post("/api/lyrics/scan", status_code=202, dependencies=[protected])
     async def api_lyrics_scan(refresh: bool = False, upgrade: bool = False,
                               redo_words: bool = False):

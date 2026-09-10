@@ -118,18 +118,31 @@ def strip_source(lrc: str) -> str:
     return _SOURCE_TAG.sub("", lrc or "", count=1)
 
 
-def stamp_source(lrc: str, source: str) -> str:
+"""A build that cannot be named. Stamped on a file written before the
+tag existed: the source can sometimes be established after the fact, but
+which build rendered it cannot, and a repair pass keying off the version
+has to be told that rather than shown a plausible one."""
+UNKNOWN_VERSION = "?"
+
+
+def stamp_source(lrc: str, source: str, version: str = "") -> str:
     """Record who this LRC came from, replacing any existing tag.
 
     Timing is read from the text rather than passed in: a word-by-word
     request that Apple only had line timing for still returns, and the
     tag has to describe the file that was actually written.
+
+    version defaults to this build, which is right for a file being
+    written now. Pass UNKNOWN_VERSION when tagging one that already
+    existed - claiming this build rendered it would be false, and the
+    version is exactly what a later repair pass reads.
     """
     if not lrc:
         return lrc
     body = strip_source(lrc)
     timing = "word" if has_word_timing(body) else "line"
-    return "[re:beetdrop %s %s %s]\n%s" % (__version__, source, timing, body)
+    return "[re:beetdrop %s %s %s]\n%s" % (version or __version__, source,
+                                           timing, body)
 
 
 def looks_synthetic(lrc: str) -> bool:

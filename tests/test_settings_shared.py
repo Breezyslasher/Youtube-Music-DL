@@ -96,7 +96,8 @@ class TestTheCliUsesTheSameDatabase:
     def _args(self, **over):
         import argparse
         values = dict(estimate=None, list=None, stats=False, refresh=False,
-                      upgrade=False, redo_words=False, show_matches=False)
+                      upgrade=False, redo_words=False, show_matches=False,
+                      tag_sources=False)
         values.update(over)
         return argparse.Namespace(**values)
 

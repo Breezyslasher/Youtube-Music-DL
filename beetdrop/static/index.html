@@ -359,12 +359,42 @@
               <span class="barnum">{{ row.count.toLocaleString() }}</span>
             </div>
           </div>
-          <p v-if="untaggedCount" class="note">
-            {{ untaggedCount.toLocaleString() }}
-            {{ untaggedCount === 1 ? 'was' : 'were' }} written before Beetdrop
-            recorded a source. That number only falls as later passes rewrite
-            them - it does not mean the source is unknowable, just unrecorded.
-          </p>
+          <template v-if="untaggedCount">
+            <p class="note">
+              {{ untaggedCount.toLocaleString() }}
+              {{ untaggedCount === 1 ? 'was' : 'were' }} written before Beetdrop
+              recorded a source. Unrecorded, not unknowable - and the
+              word-by-word ones can be established now, offline.
+            </p>
+            <div class="chiprow">
+              <button type="button" @click="tagSources" :disabled="taggingSources">
+                {{ taggingSources ? 'Reading sidecars...' : 'Tag what can be established' }}
+              </button>
+            </div>
+            <details class="explain">
+              <summary>What can it work out, and what can it not?</summary>
+              <p class="note">
+                Apple is the only source with per-word timing, so a
+                word-by-word sidecar can only have come from Apple. That is
+                an inference from what the other two are capable of, not a
+                guess, and it covers exactly the files a rendering defect
+                would spoil.
+              </p>
+              <p class="note">
+                A line-level sidecar is left untagged. LRCLIB, Musixmatch
+                and Apple all produce those and nothing in the file tells
+                them apart - writing a plausible source would turn
+                "unrecorded" into a wrong answer that later reads as fact.
+                Those get tagged when a pass rewrites them.
+              </p>
+              <p class="note">
+                The build is recorded as unknown. Which version rendered a
+                file that already existed cannot be recovered, and the
+                version is what a later repair pass reads, so it says so
+                rather than claiming this one.
+              </p>
+            </details>
+          </template>
         </template>
         <div class="chiprow" style="margin-top:8px">
           <button type="button" class="primary" @click="scanLyrics(false)">

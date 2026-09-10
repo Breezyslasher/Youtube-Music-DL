@@ -258,11 +258,20 @@ def write_lyrics_sidecar(audio_path: Path, lrc_text: str,
     target = audio_path.with_suffix(".lrc")
     if target.exists() and not overwrite:
         return target
+    replace_text(target, lrc_text)
+    return target
+
+
+def replace_text(target: Path, text: str) -> None:
+    """Overwrite a text file atomically - written beside it, then moved.
+
+    A sidecar half-written by an interrupted pass is worse than one not
+    touched at all: the lyrics are gone and nothing on disk says so.
+    """
     temp = target.parent / (".%s.beetdrop-tmp" % target.name)
     try:
-        temp.write_text(lrc_text, encoding="utf-8")
+        temp.write_text(text, encoding="utf-8")
         os.replace(temp, target)
     finally:
         if temp.exists():
             temp.unlink()
-    return target
