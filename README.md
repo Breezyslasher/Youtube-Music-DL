@@ -134,6 +134,32 @@ against the library and nothing is written to it: it is just the lyrics
 file. Preview it first if you want to see what you are getting; a track
 Apple has only line timing for still downloads, and the page says so.
 
+## The Workbench layout
+
+The UI is a shell rather than one page: a sidebar on desktop
+(Search / Queue / Library / Stats / Repair / Settings) and a bottom tab
+bar on phone, with the queue as a persistent right rail instead of a
+sheet you have to open. Two screens are new:
+
+- **Library** - what is on disk, as albums, with filter chips for the
+  maintenance lists that used to be buried in Settings: missing lyrics,
+  line-level only, unverified, gaps in numbering, junk. Expanding an
+  album lists its tracks with per-track lyrics state.
+- **Stats** - library health: coverage, formats, grab reliability and a
+  14-day activity band, with the lyrics passes labelled by how many
+  tracks each would touch.
+
+Both are read on demand rather than cached. At 5,794 tracks the walk plus
+a read of every sidecar measures well under a second, and a second copy
+of the truth is a thing that can go stale. Embedded tags are deliberately
+not read: a mutagen open per file is the one part that is not free, and
+nothing on these screens needs it.
+
+Album completeness comes from the numbering in the filenames, not from
+MusicBrainz - "gaps in numbering" is what an interrupted album grab
+actually leaves, and the release total would mean reading a release id
+out of every file.
+
 ## Web UI and API
 
 `python -m beetdrop serve` (port 8090) serves a single-page PWA:

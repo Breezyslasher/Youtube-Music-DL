@@ -4,3 +4,7 @@ pytest>=8
 # run against either.
 httpx
 httpx2
+# The page-load test drives a real browser. Optional: without playwright,
+# or without a chromium binary to point it at, those tests skip - the
+# rest of the suite does not need it.
+playwright
