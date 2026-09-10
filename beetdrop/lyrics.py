@@ -83,9 +83,14 @@ def lrc_times(lrc: str) -> list:
 #
 # [re:] is the standard LRC id tag for the program that created the file,
 # so players already ignore it; anything reading id tags sees a normal
-# one rather than something invented. Payload is
+# one rather than something invented. Beetdrop's payload is
 # "beetdrop <version> <source> <line|word>".
-_SOURCE_TAG = re.compile(r"^\[re:beetdrop([^\]]*)\]\r?\n?", re.M)
+#
+# Any writer is parsed, not just ours. A sidecar made by another tool -
+# a forced aligner converting line-level lyrics to word-by-word, say -
+# can name itself the same way and be understood here; and a file that
+# already says who wrote it is one Beetdrop must not guess about.
+_SOURCE_TAG = re.compile(r"^\[re:([^\]]*)\]\r?\n?", re.M)
 
 
 class Provenance(NamedTuple):
@@ -93,19 +98,32 @@ class Provenance(NamedTuple):
     is every file written before this, so absent means unknown and never
     "not Apple"."""
 
+    writer: str = ""    # the program: "beetdrop", or another tool
     version: str = ""
-    source: str = ""
+    source: str = ""    # where the words came from, when the writer says
     timing: str = ""
 
 
 def lyric_provenance(lrc: str) -> Provenance:
-    """The source tag on an LRC, if it has one."""
+    """The [re:] tag on an LRC, if it has one."""
     found = _SOURCE_TAG.search(lrc or "")
     if not found:
         return Provenance()
     parts = found.group(1).split()
-    parts += [""] * (3 - len(parts))
-    return Provenance(parts[0], parts[1], parts[2])
+    parts += [""] * (4 - len(parts))
+    return Provenance(*parts[:4])
+
+
+def lyric_source_label(lrc: str) -> str:
+    """One name for who is responsible for this file, for grouping.
+
+    The source when the writer recorded one, else the writer itself: a
+    sidecar stamped by another program is not untagged, it just did not
+    say which database the words came from - and naming the program is
+    more use than calling it unknown.
+    """
+    found = lyric_provenance(lrc)
+    return found.source or found.writer
 
 
 def strip_source(lrc: str) -> str:

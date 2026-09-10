@@ -171,6 +171,10 @@ def cmd_scan_lyrics(args, config: Config) -> int:
         print("%d sidecar(s): %d already tagged, %d now tagged as Apple, "
               "%d left untagged" % (found.total, found.already, found.tagged,
                                     found.unknowable))
+        if found.foreign:
+            print("%d word-by-word file(s) have a .lrc.bak beside them, so "
+                  "another tool converted those - left undetermined rather "
+                  "than filed under Apple." % found.foreign)
         if found.unknowable:
             print("The untagged ones are line-level. LRCLIB, Musixmatch and "
                   "Apple all produce those and nothing in the file tells "

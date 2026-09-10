@@ -79,7 +79,15 @@ Standalone: no beets, no external tagger, one container.
    tells them apart; a plausible source written in would later be read as
    a fact. Those get tagged when a pass rewrites them. The build is
    recorded as `?`, since which version rendered an existing file cannot
-   be recovered and the version is exactly what a repair pass reads.
+   be recovered and the version is exactly what a repair pass reads. Two
+   kinds of file are deliberately left undetermined rather than credited
+   to Apple: one that already names its own writer in `[re:]`, and one
+   with a `.lrc.bak` beside it, which is what an external forced aligner
+   converting lyrics in place leaves behind. "Only Apple has word timing"
+   stops being true the moment another tool writes word timing into the
+   library, and a tag worth reading later is one that never guessed. Any
+   writer's `[re:]` tag is understood, not just Beetdrop's, so a tool that
+   names itself the same way shows up as its own source on Stats.
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the
@@ -225,7 +233,12 @@ library; defaults to a subfolder of /music), `BEETDROP_VIDEO_MAX_HEIGHT`
 `BEETDROP_MIN_FREE_MB`, `BEETDROP_KEEP_JOBS`, `BEETDROP_KEEP_DAYS`,
 `BEETDROP_SCRATCH`. Legacy `TRACKPULL_*` names are still honored.
 
-CLI:
+CLI - in Docker, run it inside the container as the library's owner, so
+nothing it writes ends up owned by root:
+
+```
+docker compose exec -u beetdrop beetdrop python3 -m beetdrop scan-lyrics --stats
+```
 
 ```
 python -m beetdrop search "artist song" [--albums | --videos]

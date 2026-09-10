@@ -1296,6 +1296,55 @@ class TestTaggingWhatAlreadyExists:
         second = tag_existing_sources(root)
         assert second.tagged == 0 and second.already == 1
 
+    def test_another_tools_conversion_is_not_filed_under_apple(self, tmp_path):
+        """The inference is "only Apple has word timing", and that stops
+        being true the moment a forced aligner writes into the library.
+
+        An in-place conversion leaves the original as .lrc.bak, which is
+        the evidence. Undetermined beats crediting Apple for work it did
+        not do - the tag exists to be trusted later.
+        """
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import lyric_provenance
+
+        root = self._library(tmp_path)
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        aligned = album / "03 - T.lrc"
+        aligned.write_text(self.WORDS)
+        (album / "03 - T.lrc.bak").write_text(self.LINES)
+        found = tag_existing_sources(root)
+        assert found.foreign == 1
+        assert lyric_provenance(aligned.read_text()).source == ""
+        # The genuine one beside it is still established.
+        assert found.tagged == 1
+
+    def test_a_file_naming_its_own_writer_is_left_alone(self, tmp_path):
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import lyric_provenance
+
+        root = self._library(tmp_path)
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        theirs = album / "03 - T.lrc"
+        theirs.write_text("[re:lrc-align 1.2 forced-align word]\n" + self.WORDS)
+        found = tag_existing_sources(root)
+        assert found.already == 1
+        assert theirs.read_text().startswith("[re:lrc-align")
+        # And it is reported as that tool rather than as untagged.
+        assert lyric_provenance(theirs.read_text()).writer == "lrc-align"
+
+    def test_another_tools_tag_shows_up_on_stats(self, tmp_path):
+        root = self._library(tmp_path)
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        (album / "03 - T.lrc").write_text(
+            "[re:lrc-align 1.2 forced-align word]\n" + self.WORDS)
+        config = Config(music_root=root, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        with TestClient(create_app(config)) as client:
+            stats = client.get("/api/stats").json()
+        counted = {row["source"]: row["count"]
+                   for row in stats["lyrics"]["by_source"]}
+        assert counted["forced-align"] == 1
+
     def test_the_endpoint_reports_both_halves(self, tmp_path):
         root = self._library(tmp_path)
         config = Config(music_root=root, scratch_root=tmp_path / "s",
