@@ -237,8 +237,16 @@ CLI - in Docker, run it inside the container as the library's owner, so
 nothing it writes ends up owned by root:
 
 ```
-docker compose exec -u beetdrop beetdrop python3 -m beetdrop scan-lyrics --stats
+docker exec -u beetdrop beetdrop python3 -m beetdrop scan-lyrics --stats
 ```
+
+`docker exec` takes the container name (`beetdrop` by default - `docker ps`
+if you changed it) and works from any directory. `docker compose exec` is
+equivalent but only inside the folder holding your docker-compose.yml,
+otherwise it exits with "no configuration file provided: not found".
+The `-u` matters either way: the entrypoint drops to the beetdrop user,
+but exec defaults to root, and a file written as root into a library the
+host owns is a permissions problem to untangle later.
 
 ```
 python -m beetdrop search "artist song" [--albums | --videos]
