@@ -4,7 +4,12 @@
    responses and the SSE stream are never cached - job state and search
    results must always be live. */
 
-const CACHE = "beetdrop-shell-v21";
+// Bumped for the Workbench redesign. The name is the version: install
+// re-seeds under the new key and activate deletes every other one, so
+// the old shell is gone rather than waiting to be overwritten by a
+// successful online load. A whole-UI change is exactly when an offline
+// launch must not serve the previous look.
+const CACHE = "beetdrop-shell-v22";
 const SHELL = [
   "/",
   "/static/style.css",
