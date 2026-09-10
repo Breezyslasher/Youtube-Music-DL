@@ -142,6 +142,11 @@ const app = createApp({
       return !this.mediaMobile && this.layout !== "mobile"
         && (this.view === "search" || this.view === "library");
     },
+    untaggedCount() {
+      const rows = (this.stats && this.stats.lyrics.by_source) || [];
+      const found = rows.find((row) => row.source === "untagged");
+      return found ? found.count : 0;
+    },
     stripJob() {
       // The phone strip shows one job: whatever is running, or the most
       // recent one if nothing is.
@@ -351,6 +356,19 @@ const app = createApp({
       } finally {
         this.loadingStats = false;
       }
+    },
+
+    sourceName(source) {
+      // The tag stores the internal name; these are what the settings
+      // page calls the same three sources.
+      return {apple: "Apple Music", lrclib: "LRCLIB",
+              musixmatch: "Musixmatch", untagged: "untagged"}[source] || source;
+    },
+
+    sourceShare(row) {
+      const rows = (this.stats && this.stats.lyrics.by_source) || [];
+      const most = rows.reduce((top, one) => Math.max(top, one.count), 0);
+      return most ? (100 * row.count / most) : 0;
     },
 
     lyricShare(kind) {

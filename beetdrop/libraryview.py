@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from .lyrics import has_backwards_word_timing, has_word_timing, looks_synthetic
+from .lyrics import (has_backwards_word_timing, has_word_timing,
+                     looks_synthetic, lyric_provenance)
 
 AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
 VIDEO_EXTS = (".mp4", ".mkv", ".webm")
@@ -59,17 +60,28 @@ def album_path(root: Path, ident: str) -> Optional[Path]:
     return candidate
 
 
-def lyric_state(sidecar: Path) -> str:
-    """"word", "line", "junk" or "none" for one track's sidecar."""
+def read_sidecar(sidecar: Path):
+    """(state, source) for one track: what the .lrc is and who wrote it.
+
+    One read for both. The source comes from the [re:] tag Beetdrop
+    stamps on the way out, so a file written before that - or by anything
+    else - reports "" rather than being guessed at.
+    """
     if not sidecar.is_file():
-        return "none"
+        return "none", ""
     try:
         text = sidecar.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return "none"
+        return "none", ""
+    source = lyric_provenance(text).source
     if looks_synthetic(text):
-        return "junk"
-    return "word" if has_word_timing(text) else "line"
+        return "junk", source
+    return ("word" if has_word_timing(text) else "line"), source
+
+
+def lyric_state(sidecar: Path) -> str:
+    """"word", "line", "junk" or "none" for one track's sidecar."""
+    return read_sidecar(sidecar)[0]
 
 
 def _split_year(name: str):
@@ -97,6 +109,9 @@ class Album:
     # here, and it is what an interrupted album grab actually leaves.
     expected_count: int = 0
     lyrics: dict = field(default_factory=dict)
+    # Which source wrote each sidecar, by count. "" is a file with no
+    # tag: written before the tag existed, or by something else.
+    lyric_sources: dict = field(default_factory=dict)
     format: str = ""
     size_bytes: int = 0
     added_at: float = 0.0
@@ -135,11 +150,15 @@ def scan_albums(root: Path) -> list:
             year = ""
 
         counts = Counter()
+        sources = Counter()
         newest = 0.0
         size = 0
         numbers = []
         for track in tracks:
-            counts[lyric_state(track.with_suffix(".lrc"))] += 1
+            state, source = read_sidecar(track.with_suffix(".lrc"))
+            counts[state] += 1
+            if state != "none":
+                sources[source] += 1
             try:
                 info = track.stat()
                 size += info.st_size
@@ -155,6 +174,7 @@ def scan_albums(root: Path) -> list:
             expected_count=max(numbers) if numbers else 0,
             lyrics={state: counts.get(state, 0)
                     for state in ("word", "line", "junk", "none")},
+            lyric_sources=dict(sources),
             format=Counter(t.suffix.lstrip(".").lower()
                            for t in tracks).most_common(1)[0][0],
             size_bytes=size, added_at=newest, verified=not in_review,
@@ -207,10 +227,12 @@ def album_tracks(folder: Path) -> list:
             size = path.stat().st_size
         except OSError:
             size = 0
+        state, source = read_sidecar(path.with_suffix(".lrc"))
         rows.append({
             "name": path.name, "path": str(path),
             "number": _track_number(path.name),
-            "lyrics": lyric_state(path.with_suffix(".lrc")),
+            "lyrics": state,
+            "lyrics_source": source,
             "size_bytes": size,
             "format": path.suffix.lstrip(".").lower(),
         })
@@ -238,6 +260,7 @@ def bad_timing_count(root: Path) -> int:
 def summarise(albums: list) -> dict:
     """The library totals the Stats screen leads with."""
     lyrics = Counter()
+    sources = Counter()
     formats: dict = {}
     artists = set()
     tracks = size = incomplete = review = 0
@@ -252,6 +275,8 @@ def summarise(albums: list) -> dict:
             review += album.track_count
         for state, count in album.lyrics.items():
             lyrics[state] += count
+        for name, count in (album.lyric_sources or {}).items():
+            sources[name or "untagged"] += count
         entry = formats.setdefault(album.format, {"ext": album.format,
                                                   "count": 0, "bytes": 0})
         entry["count"] += album.track_count
@@ -264,8 +289,20 @@ def summarise(albums: list) -> dict:
         "review_count": review,
         "bytes_used": size,
         "verified_pct": (100.0 * (tracks - review) / tracks) if tracks else 100.0,
-        "lyrics": {state: lyrics.get(state, 0)
-                   for state in ("word", "line", "junk", "none")},
+        "lyrics": {
+            **{state: lyrics.get(state, 0)
+               for state in ("word", "line", "junk", "none")},
+            # Which source wrote each sidecar. "untagged" is every file
+            # written before Beetdrop stamped one, so it shrinks as
+            # passes rewrite them rather than meaning "unknown source".
+            # Untagged last whatever its size: it is a backlog, not a
+            # source, and reading it as the biggest provider would be
+            # exactly the wrong conclusion.
+            "by_source": [{"source": name, "count": count}
+                          for name, count in sorted(
+                              sources.most_common(),
+                              key=lambda row: (row[0] == "untagged", -row[1]))],
+        },
         "formats": sorted(formats.values(), key=lambda row: -row["count"]),
     }
 

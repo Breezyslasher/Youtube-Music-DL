@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import beetdrop.apple as apple
 import beetdrop.lyrics as lyrics_module
+from beetdrop.lyrics import strip_source
 from beetdrop.app import create_app
 from beetdrop.config import Config
 
@@ -141,13 +142,13 @@ class TestProviderChain:
 
     def test_apple_primary_wins(self, monkeypatch):
         self._sources(monkeypatch, lrclib="[00:01.00]L", apl="[00:02.00]A")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", provider="apple", apple_token="t") == "[00:02.00]A"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="apple", apple_token="t")) == "[00:02.00]A"
 
     def test_apple_is_a_fallback_for_the_others(self, monkeypatch):
         self._sources(monkeypatch, lrclib=None, mxm=None, apl="[00:02.00]A")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", provider="lrclib", apple_token="t") == "[00:02.00]A"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="lrclib", apple_token="t")) == "[00:02.00]A"
 
     def test_apple_skipped_without_token(self, monkeypatch):
         monkeypatch.setattr(lyrics_module, "_lrclib", lambda a, t, al, d: None)
@@ -160,15 +161,15 @@ class TestProviderChain:
 
     def test_unknown_provider_falls_back_to_lrclib(self, monkeypatch):
         self._sources(monkeypatch, lrclib="[00:01.00]L")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", provider="spotify") == "[00:01.00]L"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="spotify")) == "[00:01.00]L"
 
     def test_placeholder_from_apple_is_rejected(self, monkeypatch):
         # The synthetic-timing guard applies to every source.
         even = "\n".join("[00:%02d.00]word %d" % (i * 4, i) for i in range(12))
         self._sources(monkeypatch, apl=even, lrclib="[00:01.00]real")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", provider="apple", apple_token="t") == "[00:01.00]real"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="apple", apple_token="t")) == "[00:01.00]real"
 
 
 class TestSettings:
@@ -297,18 +298,18 @@ class TestWordByWordPreference:
         # Apple was never asked and word timing was silently lost.
         words = "[00:09.26]<00:09.26>I <00:09.64>drove"
         self._sources(monkeypatch, lrclib="[00:09.00]I drove", apl=words)
-        assert lyrics_module.fetch_synced_lyrics(
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
             "Adele", "Remedy", provider="lrclib", apple_token="t",
-            word_by_word=True) == words
+            word_by_word=True)) == words
 
     def test_falls_back_when_apple_has_only_line_timing(self, monkeypatch):
         self._sources(monkeypatch, lrclib="[00:09.00]lrclib line",
                       apl="[00:09.00]apple line")
         # Apple has no word timing for this one, so the configured primary
         # decides as usual.
-        assert lyrics_module.fetch_synced_lyrics(
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
             "A", "S", provider="lrclib", apple_token="t",
-            word_by_word=True) == "[00:09.00]lrclib line"
+            word_by_word=True)) == "[00:09.00]lrclib line"
 
     def test_apple_asked_only_once(self, monkeypatch):
         calls = []
@@ -320,14 +321,14 @@ class TestWordByWordPreference:
 
     def test_line_mode_keeps_the_configured_order(self, monkeypatch):
         self._sources(monkeypatch, lrclib="[00:09.00]lrclib", apl="[00:09.00]apple")
-        assert lyrics_module.fetch_synced_lyrics(
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
             "A", "S", provider="lrclib", apple_token="t",
-            word_by_word=False) == "[00:09.00]lrclib"
+            word_by_word=False)) == "[00:09.00]lrclib"
 
     def test_no_apple_token_is_unaffected(self, monkeypatch):
         self._sources(monkeypatch, lrclib="[00:09.00]lrclib")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", provider="lrclib", word_by_word=True) == "[00:09.00]lrclib"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", provider="lrclib", word_by_word=True)) == "[00:09.00]lrclib"
 
 
 class TestHasWordTiming:
@@ -1042,8 +1043,8 @@ class TestChainSkipsAppleButKeepsGoing:
         monkeypatch.setattr(apple.time, "sleep",
                             lambda s: pytest.fail("waited out the hold"))
         apple.hold_off(60.0)
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", apple_token="t") == "[00:01.00]found"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", apple_token="t")) == "[00:01.00]found"
 
     def test_nothing_else_answering_defers_rather_than_missing(self, monkeypatch):
         monkeypatch.setattr(lyrics_module, "_lrclib", lambda *a, **k: None)

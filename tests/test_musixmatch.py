@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import beetdrop.lyrics as lyrics_module
+from beetdrop.lyrics import strip_source
 import beetdrop.musixmatch as mxm
 from beetdrop.app import create_app
 from beetdrop.config import Config
@@ -124,23 +125,23 @@ class TestProviderChain:
 
     def test_default_lrclib_first(self, monkeypatch):
         self._mock(monkeypatch, lrclib="[00:01.00]L", mxm="[00:02.00]M")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", musixmatch_token="tok") == "[00:01.00]L"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", musixmatch_token="tok")) == "[00:01.00]L"
 
     def test_lrclib_falls_back_to_musixmatch(self, monkeypatch):
         self._mock(monkeypatch, lrclib=None, mxm="[00:02.00]M")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", musixmatch_token="tok", provider="lrclib") == "[00:02.00]M"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", musixmatch_token="tok", provider="lrclib")) == "[00:02.00]M"
 
     def test_musixmatch_primary_first(self, monkeypatch):
         self._mock(monkeypatch, lrclib="[00:01.00]L", mxm="[00:02.00]M")
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", musixmatch_token="tok", provider="musixmatch") == "[00:02.00]M"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", musixmatch_token="tok", provider="musixmatch")) == "[00:02.00]M"
 
     def test_musixmatch_primary_falls_back_to_lrclib(self, monkeypatch):
         self._mock(monkeypatch, lrclib="[00:01.00]L", mxm=None)
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", musixmatch_token="tok", provider="musixmatch") == "[00:01.00]L"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", musixmatch_token="tok", provider="musixmatch")) == "[00:01.00]L"
 
     def test_musixmatch_skipped_without_token(self, monkeypatch):
         monkeypatch.setattr(lyrics_module, "_lrclib", lambda a, t, al, d: None)
