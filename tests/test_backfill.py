@@ -1213,6 +1213,149 @@ class TestSearchingForAMissingTrackByHand:
         assert "/api/lyrics/search?q=" in source
 
 
+class TestTaggingWhatAlreadyExists:
+    """Establishing the source of sidecars written before the tag.
+
+    Offline, and it must never guess: a plausible source written into a
+    file is read as a fact by everything after it.
+    """
+
+    WORDS = "[00:01.00]<00:01.00>Tumble <00:01.40>out\n[00:05.00]<00:05.00>And\n"
+    LINES = "[00:01.00]Tumble out of bed\n[00:05.00]And stumble\n"
+
+    def _library(self, tmp_path):
+        root = tmp_path / "music"
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        album.mkdir(parents=True)
+        for n in (1, 2, 3):
+            (album / ("%02d - T.opus" % n)).write_bytes(b"x")
+        (album / "01 - T.lrc").write_text(self.WORDS)   # only Apple can do this
+        (album / "02 - T.lrc").write_text(self.LINES)   # any of the three
+        return root
+
+    def test_word_level_is_established_as_apple(self, tmp_path):
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import lyric_provenance
+
+        root = self._library(tmp_path)
+        found = tag_existing_sources(root)
+        assert found.tagged == 1 and found.unknowable == 1
+        tagged = (root / "Dolly Parton" / "9 to 5 (1980)" / "01 - T.lrc")
+        assert lyric_provenance(tagged.read_text()).source == "apple"
+
+    def test_line_level_is_left_alone_rather_than_guessed(self, tmp_path):
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import lyric_provenance
+
+        root = self._library(tmp_path)
+        untouched = root / "Dolly Parton" / "9 to 5 (1980)" / "02 - T.lrc"
+        before = untouched.read_text()
+        tag_existing_sources(root)
+        assert untouched.read_text() == before
+        assert lyric_provenance(untouched.read_text()).source == ""
+
+    def test_the_build_is_recorded_as_unknown(self, tmp_path):
+        # Claiming this build rendered a file it did not is the one lie
+        # that would matter: the version is what a repair pass reads to
+        # decide whether a file needs redoing.
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import UNKNOWN_VERSION, lyric_provenance
+
+        root = self._library(tmp_path)
+        tag_existing_sources(root)
+        tagged = root / "Dolly Parton" / "9 to 5 (1980)" / "01 - T.lrc"
+        assert lyric_provenance(tagged.read_text()).version == UNKNOWN_VERSION
+
+    def test_the_lyrics_are_not_touched(self, tmp_path):
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import strip_source
+
+        root = self._library(tmp_path)
+        tag_existing_sources(root)
+        tagged = root / "Dolly Parton" / "9 to 5 (1980)" / "01 - T.lrc"
+        assert strip_source(tagged.read_text()) == self.WORDS
+
+    def test_an_existing_tag_is_left_as_it_is(self, tmp_path):
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import lyric_provenance, stamp_source
+
+        root = self._library(tmp_path)
+        already = root / "Dolly Parton" / "9 to 5 (1980)" / "03 - T.lrc"
+        already.write_text(stamp_source(self.WORDS, "lrclib"))
+        found = tag_existing_sources(root)
+        assert found.already == 1
+        # Not overwritten with the inference: what the file says beats
+        # what could be worked out about it.
+        assert lyric_provenance(already.read_text()).source == "lrclib"
+
+    def test_running_it_twice_changes_nothing_the_second_time(self, tmp_path):
+        from beetdrop.backfill import tag_existing_sources
+
+        root = self._library(tmp_path)
+        tag_existing_sources(root)
+        second = tag_existing_sources(root)
+        assert second.tagged == 0 and second.already == 1
+
+    def test_another_tools_conversion_is_not_filed_under_apple(self, tmp_path):
+        """The inference is "only Apple has word timing", and that stops
+        being true the moment a forced aligner writes into the library.
+
+        An in-place conversion leaves the original as .lrc.bak, which is
+        the evidence. Undetermined beats crediting Apple for work it did
+        not do - the tag exists to be trusted later.
+        """
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import lyric_provenance
+
+        root = self._library(tmp_path)
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        aligned = album / "03 - T.lrc"
+        aligned.write_text(self.WORDS)
+        (album / "03 - T.lrc.bak").write_text(self.LINES)
+        found = tag_existing_sources(root)
+        assert found.foreign == 1
+        assert lyric_provenance(aligned.read_text()).source == ""
+        # The genuine one beside it is still established.
+        assert found.tagged == 1
+
+    def test_a_file_naming_its_own_writer_is_left_alone(self, tmp_path):
+        from beetdrop.backfill import tag_existing_sources
+        from beetdrop.lyrics import lyric_provenance
+
+        root = self._library(tmp_path)
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        theirs = album / "03 - T.lrc"
+        theirs.write_text("[re:lrc-align 1.2 forced-align word]\n" + self.WORDS)
+        found = tag_existing_sources(root)
+        assert found.already == 1
+        assert theirs.read_text().startswith("[re:lrc-align")
+        # And it is reported as that tool rather than as untagged.
+        assert lyric_provenance(theirs.read_text()).writer == "lrc-align"
+
+    def test_another_tools_tag_shows_up_on_stats(self, tmp_path):
+        root = self._library(tmp_path)
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        (album / "03 - T.lrc").write_text(
+            "[re:lrc-align 1.2 forced-align word]\n" + self.WORDS)
+        config = Config(music_root=root, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        with TestClient(create_app(config)) as client:
+            stats = client.get("/api/stats").json()
+        counted = {row["source"]: row["count"]
+                   for row in stats["lyrics"]["by_source"]}
+        assert counted["forced-align"] == 1
+
+    def test_the_endpoint_reports_both_halves(self, tmp_path):
+        root = self._library(tmp_path)
+        config = Config(music_root=root, scratch_root=tmp_path / "s",
+                        config_dir=tmp_path / "c")
+        with TestClient(create_app(config)) as client:
+            body = client.post("/api/lyrics/tag-sources").json()
+        assert body["tagged"] == 1
+        assert body["unknowable"] == 1
+        assert body["total"] == 2
+
+
 class TestTheLibraryAndStatsEndpoints:
     """Library and Stats are walks of the tree, not a cached index: at a
     real library size the walk plus a read of every sidecar is under a

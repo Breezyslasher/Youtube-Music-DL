@@ -71,6 +71,7 @@ const app = createApp({
       albumTracks: [],
       stats: null,
       loadingStats: false,
+      taggingSources: false,
       notifyOnDone: localStorage.getItem("beetdrop.notify") === "1",
       testingApple: false,
       appleStatus: "",
@@ -355,6 +356,26 @@ const app = createApp({
         }
       } finally {
         this.loadingStats = false;
+      }
+    },
+
+    async tagSources() {
+      this.taggingSources = true;
+      try {
+        const found = await this.api("/api/lyrics/tag-sources",
+                                     { method: "POST" });
+        this.showToast(found.tagged
+          ? "Tagged " + found.tagged + " as Apple; " + found.unknowable
+            + " line-level left untagged"
+          : "Nothing new could be established from the files themselves");
+        // The numbers on this screen came from before the rewrite.
+        await this.loadStats();
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not tag them: " + err.message);
+        }
+      } finally {
+        this.taggingSources = false;
       }
     },
 

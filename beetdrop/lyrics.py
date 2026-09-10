@@ -83,9 +83,14 @@ def lrc_times(lrc: str) -> list:
 #
 # [re:] is the standard LRC id tag for the program that created the file,
 # so players already ignore it; anything reading id tags sees a normal
-# one rather than something invented. Payload is
+# one rather than something invented. Beetdrop's payload is
 # "beetdrop <version> <source> <line|word>".
-_SOURCE_TAG = re.compile(r"^\[re:beetdrop([^\]]*)\]\r?\n?", re.M)
+#
+# Any writer is parsed, not just ours. A sidecar made by another tool -
+# a forced aligner converting line-level lyrics to word-by-word, say -
+# can name itself the same way and be understood here; and a file that
+# already says who wrote it is one Beetdrop must not guess about.
+_SOURCE_TAG = re.compile(r"^\[re:([^\]]*)\]\r?\n?", re.M)
 
 
 class Provenance(NamedTuple):
@@ -93,19 +98,32 @@ class Provenance(NamedTuple):
     is every file written before this, so absent means unknown and never
     "not Apple"."""
 
+    writer: str = ""    # the program: "beetdrop", or another tool
     version: str = ""
-    source: str = ""
+    source: str = ""    # where the words came from, when the writer says
     timing: str = ""
 
 
 def lyric_provenance(lrc: str) -> Provenance:
-    """The source tag on an LRC, if it has one."""
+    """The [re:] tag on an LRC, if it has one."""
     found = _SOURCE_TAG.search(lrc or "")
     if not found:
         return Provenance()
     parts = found.group(1).split()
-    parts += [""] * (3 - len(parts))
-    return Provenance(parts[0], parts[1], parts[2])
+    parts += [""] * (4 - len(parts))
+    return Provenance(*parts[:4])
+
+
+def lyric_source_label(lrc: str) -> str:
+    """One name for who is responsible for this file, for grouping.
+
+    The source when the writer recorded one, else the writer itself: a
+    sidecar stamped by another program is not untagged, it just did not
+    say which database the words came from - and naming the program is
+    more use than calling it unknown.
+    """
+    found = lyric_provenance(lrc)
+    return found.source or found.writer
 
 
 def strip_source(lrc: str) -> str:
@@ -118,18 +136,31 @@ def strip_source(lrc: str) -> str:
     return _SOURCE_TAG.sub("", lrc or "", count=1)
 
 
-def stamp_source(lrc: str, source: str) -> str:
+"""A build that cannot be named. Stamped on a file written before the
+tag existed: the source can sometimes be established after the fact, but
+which build rendered it cannot, and a repair pass keying off the version
+has to be told that rather than shown a plausible one."""
+UNKNOWN_VERSION = "?"
+
+
+def stamp_source(lrc: str, source: str, version: str = "") -> str:
     """Record who this LRC came from, replacing any existing tag.
 
     Timing is read from the text rather than passed in: a word-by-word
     request that Apple only had line timing for still returns, and the
     tag has to describe the file that was actually written.
+
+    version defaults to this build, which is right for a file being
+    written now. Pass UNKNOWN_VERSION when tagging one that already
+    existed - claiming this build rendered it would be false, and the
+    version is exactly what a later repair pass reads.
     """
     if not lrc:
         return lrc
     body = strip_source(lrc)
     timing = "word" if has_word_timing(body) else "line"
-    return "[re:beetdrop %s %s %s]\n%s" % (__version__, source, timing, body)
+    return "[re:beetdrop %s %s %s]\n%s" % (version or __version__, source,
+                                           timing, body)
 
 
 def looks_synthetic(lrc: str) -> bool:

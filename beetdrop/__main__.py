@@ -162,6 +162,25 @@ def cmd_scan_lyrics(args, config: Config) -> int:
             # stdout so the interpreter does not retry the flush at exit.
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
+    if args.tag_sources:
+        # Offline and non-destructive, so it runs before the storage check
+        # and needs no token: it only rewrites a header.
+        from .backfill import tag_existing_sources
+        found = tag_existing_sources(config.music_root,
+                                     on_detail=lambda text: print(text))
+        print("%d sidecar(s): %d already tagged, %d now tagged as Apple, "
+              "%d left untagged" % (found.total, found.already, found.tagged,
+                                    found.unknowable))
+        if found.foreign:
+            print("%d word-by-word file(s) have a .lrc.bak beside them, so "
+                  "another tool converted those - left undetermined rather "
+                  "than filed under Apple." % found.foreign)
+        if found.unknowable:
+            print("The untagged ones are line-level. LRCLIB, Musixmatch and "
+                  "Apple all produce those and nothing in the file tells "
+                  "them apart, so no source is written rather than a "
+                  "plausible one. They get tagged when a pass rewrites them.")
+        return 0
     if args.stats:
         s = lyrics_stats(config.music_root)
         print("%d of %d tracks have lyrics (%.1f%%)" % (
@@ -956,6 +975,11 @@ def main(argv=None) -> int:
                         help="re-fetch every .lrc that already has per-word "
                              "timing and write it again, to repair sidecars "
                              "left behind by an older rendering")
+    p_scan.add_argument("--tag-sources", action="store_true",
+                        help="write a source tag onto sidecars that predate "
+                             "it. Offline, and it never guesses: word-level "
+                             "files are provably Apple, line-level ones are "
+                             "left untagged")
     p_scan.set_defaults(func=cmd_scan_lyrics)
 
     p_probe = sub.add_parser(

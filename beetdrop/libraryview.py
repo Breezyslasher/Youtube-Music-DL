@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from .lyrics import (has_backwards_word_timing, has_word_timing,
-                     looks_synthetic, lyric_provenance)
+                     looks_synthetic, lyric_source_label)
 
 AUDIO_EXTS = (".opus", ".ogg", ".mp3", ".m4a", ".flac")
 VIDEO_EXTS = (".mp4", ".mkv", ".webm")
@@ -64,8 +64,8 @@ def read_sidecar(sidecar: Path):
     """(state, source) for one track: what the .lrc is and who wrote it.
 
     One read for both. The source comes from the [re:] tag Beetdrop
-    stamps on the way out, so a file written before that - or by anything
-    else - reports "" rather than being guessed at.
+    stamps on the way out - or from another tool's, when it named itself
+    the same way. A file with no tag reports "" rather than a guess.
     """
     if not sidecar.is_file():
         return "none", ""
@@ -73,7 +73,7 @@ def read_sidecar(sidecar: Path):
         text = sidecar.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return "none", ""
-    source = lyric_provenance(text).source
+    source = lyric_source_label(text)
     if looks_synthetic(text):
         return "junk", source
     return ("word" if has_word_timing(text) else "line"), source

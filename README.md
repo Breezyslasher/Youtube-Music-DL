@@ -70,6 +70,24 @@ Standalone: no beets, no external tagger, one container.
    many line-level tracks does Apple have no words for" had no answer.
    Stats breaks the library down by source; a file written before this
    counts as "untagged", which means unrecorded and never "not Apple".
+   Those can be partly recovered without asking any provider anything:
+   "Tag what can be established" (CLI: `scan-lyrics --tag-sources`) walks
+   the library offline and tags every word-by-word sidecar as Apple,
+   since Apple is the only source with per-word timing - an inference
+   from what the other two can do, not a guess. Line-level sidecars are
+   left untagged, because all three produce those and nothing in the file
+   tells them apart; a plausible source written in would later be read as
+   a fact. Those get tagged when a pass rewrites them. The build is
+   recorded as `?`, since which version rendered an existing file cannot
+   be recovered and the version is exactly what a repair pass reads. Two
+   kinds of file are deliberately left undetermined rather than credited
+   to Apple: one that already names its own writer in `[re:]`, and one
+   with a `.lrc.bak` beside it, which is what an external forced aligner
+   converting lyrics in place leaves behind. "Only Apple has word timing"
+   stops being true the moment another tool writes word timing into the
+   library, and a tag worth reading later is one that never guessed. Any
+   writer's `[re:]` tag is understood, not just Beetdrop's, so a tool that
+   names itself the same way shows up as its own source on Stats.
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the
@@ -193,6 +211,7 @@ GET  /api/jobs                    POST /api/jobs/{id}/retry|cancel
 GET/PUT /api/settings             GET /api/health   GET /events (SSE)
 POST /api/login                   POST /api/ytdlp/update
 POST /api/lyrics/musixmatch-token POST /api/lyrics/scan
+POST /api/lyrics/tag-sources      GET  /api/library  GET /api/stats
 ```
 
 ## Running it
@@ -214,7 +233,12 @@ library; defaults to a subfolder of /music), `BEETDROP_VIDEO_MAX_HEIGHT`
 `BEETDROP_MIN_FREE_MB`, `BEETDROP_KEEP_JOBS`, `BEETDROP_KEEP_DAYS`,
 `BEETDROP_SCRATCH`. Legacy `TRACKPULL_*` names are still honored.
 
-CLI:
+CLI - in Docker, run it inside the container as the library's owner, so
+nothing it writes ends up owned by root:
+
+```
+docker compose exec -u beetdrop beetdrop python3 -m beetdrop scan-lyrics --stats
+```
 
 ```
 python -m beetdrop search "artist song" [--albums | --videos]
@@ -224,6 +248,7 @@ python -m beetdrop scan-lyrics [--refresh|--upgrade|--redo-words|--stats]  # bac
                                                # --refresh purges junk first
                                                # --upgrade re-fetches line-level as word-by-word
                                                # --redo-words re-renders every word-by-word .lrc
+                                               # --tag-sources tags existing sidecars, offline
 python -m beetdrop richsync-probe [--sample N] [--verify N]  # is Musixmatch
                                                # worth adding as a 2nd word source?
 python -m beetdrop serve [--host 0.0.0.0] [--port 8090]

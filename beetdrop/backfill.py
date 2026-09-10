@@ -566,6 +566,85 @@ def purge_bad_lyrics(root: Path, on_detail: Callable[[str], None] = None) -> int
     return removed
 
 
+@dataclass
+class TagResult:
+    """What a source-tagging pass could and could not establish."""
+
+    total: int = 0        # sidecars found
+    already: int = 0      # already named a writer
+    tagged: int = 0       # word-level, so provably Apple
+    unknowable: int = 0   # line-level: any of the three could have written it
+    foreign: int = 0      # word-level, but converted here by another tool
+
+
+def tag_existing_sources(root: Path,
+                         on_detail: Callable[[str], None] = _noop) -> TagResult:
+    """Write a source tag onto sidecars that predate the tag.
+
+    Offline, and it never guesses. Of the three sources only Apple has
+    per-word timing, so a word-level sidecar Beetdrop wrote can only have
+    come from Apple - an inference from what the other two are capable
+    of, not a hunch, and it covers exactly the files a rendering defect
+    would spoil.
+
+    That inference holds only while Beetdrop is the sole thing writing
+    word timing into the library. A forced aligner converting line-level
+    lyrics to word-by-word breaks it, so two things are left alone: a
+    file that already names its writer in [re:], whoever that is, and one
+    with a .lrc.bak beside it, which is what an in-place conversion
+    leaves behind. Better to report those as undetermined than to file
+    another tool's work under Apple.
+
+    A line-level sidecar is left untagged. LRCLIB, Musixmatch and Apple
+    can all produce one, nothing in the file distinguishes them, and
+    writing a plausible source would turn "unrecorded" into a wrong
+    answer that later reads as fact. Establishing those would mean asking
+    every source for every track and comparing the text - thousands of
+    rate-limited round trips to recover bookkeeping - so it is offered as
+    a fact about the library rather than done silently.
+
+    The build is stamped as unknown: which version rendered a file that
+    already existed is genuinely unrecoverable, and the version is what a
+    repair pass reads.
+    """
+    from .library import replace_text
+    from .lyrics import UNKNOWN_VERSION, lyric_provenance, stamp_source
+
+    result = TagResult()
+    for path in sorted(root.rglob("*.lrc")):
+        if not path.is_file():
+            continue
+        result.total += 1
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        # Any writer, not just ours: a file that says who made it is not
+        # one to guess about.
+        if lyric_provenance(text).writer:
+            result.already += 1
+            continue
+        if not has_word_timing(text):
+            result.unknowable += 1
+            continue
+        if path.with_suffix(".lrc.bak").exists():
+            result.foreign += 1
+            continue
+        try:
+            replace_text(path, stamp_source(text, "apple", UNKNOWN_VERSION))
+            result.tagged += 1
+        except OSError:
+            continue
+    on_detail("tagged %d word-by-word sidecar(s) as Apple; %d line-level "
+              "left untagged, since any source could have written them"
+              % (result.tagged, result.unknowable))
+    if result.foreign:
+        on_detail("left %d alone: a .lrc.bak beside them says another tool "
+                  "converted these, so the words are not Apple's"
+                  % result.foreign)
+    return result
+
+
 def iter_audio_missing_lyrics(root: Path):
     """Every audio file under root that has no .lrc sidecar yet, in a
     stable order."""
