@@ -9,16 +9,21 @@ const LS_LAYOUT = "beetdrop.layout";
 // bar and the queue rail becomes the strip above it.
 const MOBILE_QUERY = "(max-width: 900px)";
 
-// Tab-bar icons as bare path data. Circles are written as arcs so every
-// icon is one <path v-for> and no shape needs its own element.
+// Material Design Icons, as path data on a 24x24 viewBox - copied
+// verbatim from @mdi/svg 7.4.47 (magnify, playlist-music, album,
+// chart-bar, cog, wrench). MDI shapes are filled, not stroked, so the
+// <svg> that draws them sets fill and no stroke.
+//
+// Inlined rather than linked: the app is one container with no build
+// step and no CDN, and a webfont would be a second thing to cache and a
+// row of empty boxes when it did not arrive.
 const ICONS = {
-  search: ["M18 11a7 7 0 1 1-14 0 7 7 0 0 1 14 0", "M20 20l-4-4"],
-  queue: ["M4 7h16", "M4 12h16", "M4 17h10"],
-  library: ["M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
-            "M13 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0"],
-  stats: ["M5 20V11", "M12 20V4", "M19 20v-6"],
-  settings: ["M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
-             "M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.02a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.02a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.02a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"],
+  search: "M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z",
+  queue: "M15,6H3V8H15V6M15,10H3V12H15V10M3,16H11V14H3V16M17,6V14.18C16.69,14.07 16.35,14 16,14A3,3 0 0,0 13,17A3,3 0 0,0 16,20A3,3 0 0,0 19,17V8H22V6H17Z",
+  library: "M12,11A1,1 0 0,0 11,12A1,1 0 0,0 12,13A1,1 0 0,0 13,12A1,1 0 0,0 12,11M12,16.5C9.5,16.5 7.5,14.5 7.5,12C7.5,9.5 9.5,7.5 12,7.5C14.5,7.5 16.5,9.5 16.5,12C16.5,14.5 14.5,16.5 12,16.5M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
+  stats: "M22,21H2V3H4V19H6V10H10V19H12V6H16V19H18V14H22V21Z",
+  settings: "M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z",
+  repair: "M22.7,19L13.6,9.9C14.5,7.6 14,4.9 12.1,3C10.1,1 7.1,0.6 4.7,1.7L9,6L6,9L1.6,4.7C0.4,7.1 0.9,10.1 2.9,12.1C4.8,14 7.5,14.5 9.8,13.6L18.9,22.7C19.3,23.1 19.9,23.1 20.3,22.7L22.6,20.4C23.1,20 23.1,19.3 22.7,19Z",
 };
 
 const app = createApp({
@@ -98,6 +103,11 @@ const app = createApp({
   },
 
   computed: {
+    icons() {
+      // The template draws icons by name; the paths themselves are a
+      // constant and never change, so they are not reactive state.
+      return ICONS;
+    },
     navItems() {
       return [
         { view: "search", label: "Search" },
@@ -111,8 +121,7 @@ const app = createApp({
     tabItems() {
       // Repair is absent by design: it is reached from Library and from a
       // job card, and five items is what fits a phone without shrinking
-      // the tap targets. Icons are inline paths - 2px stroke,
-      // currentColor - rather than an icon font or a glyph.
+      // the tap targets.
       return [
         { view: "search", label: "Search", icon: ICONS.search },
         { view: "queue", label: "Queue", icon: ICONS.queue },

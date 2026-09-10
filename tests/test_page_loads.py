@@ -314,6 +314,21 @@ class TestThePhoneShell:
             heading = tab.locator(".workhead .pagetitle").inner_text()
             assert heading.strip() == label
 
+    def test_every_tab_draws_a_real_icon(self, phone):
+        # Material Design Icons are inlined as path data, so a typo is a
+        # tab with an empty box on it rather than an error anyone sees.
+        tab, _ = phone
+        drawn = tab.eval_on_selector_all(
+            ".tabbar button svg path",
+            "els => els.map(el => el.getAttribute('d') || '')")
+        assert len(drawn) == 5, drawn
+        assert all(len(d) > 20 for d in drawn), drawn
+        # MDI is a filled set; stroking it would render the shapes twice.
+        fills = tab.eval_on_selector_all(
+            ".tabbar button svg",
+            "els => els.map(el => getComputedStyle(el).fill)")
+        assert all(fill not in ("none", "") for fill in fills), fills
+
     def test_tap_targets_are_big_enough(self, phone):
         tab, _ = phone
         heights = tab.eval_on_selector_all(

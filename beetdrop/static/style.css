@@ -109,6 +109,23 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
 
 .searchrow { display: flex; gap: 8px; }
 .searchrow input { flex: 1; min-width: 0; }
+
+/* A field with a Material magnifier sitting inside it, as the design
+   draws it. The icon is decoration over the input rather than a sibling
+   beside it, so the field keeps its full tap area. */
+.fieldwrap { position: relative; display: flex; flex: 1; min-width: 0; }
+.fieldwrap input { padding-left: 38px; }
+.fieldicon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--dim);
+  pointer-events: none;
+}
+
+/* An icon inside a button sits on the text baseline row, not above it. */
+.btnicon { vertical-align: -2px; margin-right: 6px; }
 .workhead .searchrow input,
 .workhead .searchrow button { min-height: 42px; }
 .workhead .searchrow button { padding: 0 18px; font-size: 14px; }

@@ -58,9 +58,13 @@
 
     <template v-if="view === 'search'">
       <form class="searchrow" @submit.prevent="search">
-        <input v-model="query" type="search" inputmode="search" enterkeyhint="search"
-               :placeholder="searchType === 'albums' ? 'Search an album...' : (searchType === 'videos' ? 'Search a music video...' : (searchType === 'lyrics' ? 'Search lyrics to download...' : 'Search a song...'))"
-               autocomplete="off" autocapitalize="off">
+        <span class="fieldwrap">
+          <svg class="fieldicon" viewBox="0 0 24 24" width="18" height="18"
+               fill="currentColor" aria-hidden="true"><path :d="icons.search"></path></svg>
+          <input v-model="query" type="search" inputmode="search" enterkeyhint="search"
+                 :placeholder="searchType === 'albums' ? 'Search an album...' : (searchType === 'videos' ? 'Search a music video...' : (searchType === 'lyrics' ? 'Search lyrics to download...' : 'Search a song...'))"
+                 autocomplete="off" autocapitalize="off">
+        </span>
         <button type="submit" class="primary" :disabled="searching || !query.trim()">
           {{ searching ? 'Searching' : 'Search' }}
         </button>
@@ -94,8 +98,12 @@
 
     <template v-if="view === 'library'">
       <div class="titlerow">
-        <input type="search" v-model="libraryFilterText" class="grow"
-               @keyup.enter="loadLibrary()" placeholder="Filter albums...">
+        <span class="fieldwrap grow">
+          <svg class="fieldicon" viewBox="0 0 24 24" width="18" height="18"
+               fill="currentColor" aria-hidden="true"><path :d="icons.search"></path></svg>
+          <input type="search" v-model="libraryFilterText"
+                 @keyup.enter="loadLibrary()" placeholder="Filter albums...">
+        </span>
         <select v-model="librarySort" class="sortpick" @change="loadLibrary()">
           <option value="added">Recently added</option>
           <option value="az">A-Z</option>
@@ -232,7 +240,7 @@
         <button v-if="j.stage === 'done' && j.kind === 'album' && j.failed_tracks"
                 class="retry" type="button" @click="retry(j)">Retry failed tracks</button>
         <button v-if="j.stage === 'done' && j.inbox_state === 'unverified'"
-                class="retry" type="button" @click="goTo('repair')">Fix match</button>
+                class="retry" type="button" @click="goTo('repair')"><svg class="btnicon" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path :d="icons.repair"></path></svg>Fix match</button>
       </div>
     </article>
   </section>
@@ -267,7 +275,7 @@
       </div>
       <div v-if="selectedAlbum && selectedAlbum.id === album.id">
         <div class="albumactions">
-          <button type="button" @click.stop="fixFromAlbum(album)">Fix a match</button>
+          <button type="button" @click.stop="fixFromAlbum(album)"><svg class="btnicon" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path :d="icons.repair"></path></svg>Fix a match</button>
           <button type="button" @click.stop="copyPath(album.path)">Copy folder path</button>
           <span class="note">{{ album.path }}</span>
         </div>
@@ -957,7 +965,7 @@
       </p>
       <div class="jobactions">
         <button v-if="j.stage === 'done' && j.inbox_state === 'unverified'"
-                class="retry" type="button" @click="goTo('repair')">Fix match</button>
+                class="retry" type="button" @click="goTo('repair')"><svg class="btnicon" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path :d="icons.repair"></path></svg>Fix match</button>
         <button v-if="['failed','cancelled'].includes(j.stage)"
                 class="retry" type="button" @click="retry(j)">Retry</button>
         <button v-if="!['done','failed','cancelled'].includes(j.stage)"
@@ -986,11 +994,8 @@
       <button v-for="item in tabItems" :key="item.view" type="button"
               :class="{active: view === item.view}" @click="goTo(item.view)"
               :aria-label="item.label">
-        <svg class="tabicon" viewBox="0 0 24 24" width="19" height="19" fill="none"
-             stroke="currentColor" stroke-width="2" stroke-linecap="round"
-             stroke-linejoin="round" aria-hidden="true">
-          <path v-for="(d, i) in item.icon" :key="i" :d="d"></path>
-        </svg>
+        <svg class="tabicon" viewBox="0 0 24 24" width="20" height="20"
+             fill="currentColor" aria-hidden="true"><path :d="item.icon"></path></svg>
         <span class="tabtext">{{ item.label }}</span>
       </button>
     </nav>
