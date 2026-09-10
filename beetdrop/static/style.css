@@ -1,8 +1,12 @@
 /* Beetdrop UI. Hand-written CSS, custom properties for theming, dark by
-   default. Two layouts driven by a root class: .layout-mobile puts the
-   search bar in the lower half for one-handed phone use; .layout-desktop
-   is the same page in a max-width container with the search bar at the
-   top. The class is set by the layout setting (auto follows screen size). */
+   default.
+
+   One design, two shapes of the same shell, switched by a root class:
+   .layout-desktop is sidebar + work area + queue rail; .layout-mobile is
+   the work area alone with a fixed dock (queue strip over tab bar) at the
+   bottom. The class comes from the layout setting, auto following screen
+   size. There is deliberately no media query doing the same job - having
+   both decide it is how a build once ended up rendering half of each. */
 
 /* Redesign "Workbench": a low-contrast near-black with one desaturated
    sage accent. Amber means "needs a human decision" and nothing else -
@@ -52,8 +56,12 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
+/* 14px body, per the design. The root stays at 16px so the handful of
+   rem-sized rules below keep the sizes they were written for. */
+html { font-size: 16px; }
+body { font: 400 14px/1.5 var(--font); }
+.mono { font-family: var(--mono); }
 
 button {
   font: inherit;
@@ -86,110 +94,85 @@ input, select, textarea {
 }
 textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
 
-/* -- header -------------------------------------------------------------- */
+/* -- health dot ---------------------------------------------------------- */
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  padding-top: calc(10px + env(safe-area-inset-top));
-}
-.brand { font-weight: 700; font-size: 18px; letter-spacing: 0.02em; }
 .health {
-  width: 10px; height: 10px; border-radius: 50%;
+  width: 8px; height: 8px;
+  border-radius: 50%;
   background: var(--muted);
-  margin-right: auto;
+  flex: none;
 }
 .health.ok { background: var(--ok); }
 .health.degraded { background: var(--danger); }
-.iconbtn {
-  min-width: var(--tap);
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  color: var(--muted);
-}
 
 /* -- search -------------------------------------------------------------- */
 
-.searchbar {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 14px;
-  background: var(--bg);
-}
 .searchrow { display: flex; gap: 8px; }
-.searchrow input { flex: 1; }
+.searchrow input { flex: 1; min-width: 0; }
+.workhead .searchrow input,
+.workhead .searchrow button { min-height: 42px; }
+.workhead .searchrow button { padding: 0 18px; font-size: 14px; }
 
-.modetoggle {
-  display: flex;
-  gap: 6px;
+/* The format selector rides the mode row, labelled rather than guessed at. */
+.formatfield { display: inline-flex; align-items: center; gap: 8px; }
+.formatfield .label {
+  font: 400 10px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--dim);
 }
 .formatpick {
-  flex: 1.2;
-  min-height: 36px;
-  padding: 0 8px;
-  font-size: 14px;
-  color: var(--muted);
   width: auto;
-}
-.modetoggle button {
-  flex: 1;
-  min-height: 36px;
-  padding: 0 10px;
-  background: transparent;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 13px;
   color: var(--muted);
-  border: 1px solid var(--border);
-}
-.modetoggle button.active {
-  background: var(--panel-2);
-  color: var(--text);
-  border-color: var(--accent);
+  border-radius: var(--radius-sm);
 }
 
 /* -- results ------------------------------------------------------------- */
 
-.results { padding: 4px 14px; }
-.hint { color: var(--muted); padding: 12px 4px; }
+.results { display: flex; flex-direction: column; gap: 10px; }
+.hint { color: var(--muted); padding: 12px 0; margin: 0; }
 
 .card {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-soft);
   border-radius: var(--radius);
-  padding: 10px;
-  margin-bottom: 10px;
+  padding: 11px;
 }
 .thumb {
   width: 56px; height: 56px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   object-fit: cover;
   flex: none;
   background: var(--panel-2);
+}
+/* The empty state is a stripe rather than a flat block, so a missing
+   sleeve reads as missing rather than as a very dark one. */
+.thumb-blank {
+  background: repeating-linear-gradient(135deg, #191d21 0 6px, #14181b 6px 12px);
 }
 .meta {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .title {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 15px;
   font-weight: 600;
 }
 .artist {
-  color: var(--muted);
-  font-size: 14px;
+  color: var(--muted-2);
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -197,48 +180,32 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
 /* Duration is how the user spots a ten-minute extended mix before
    wasting a download. Keep it prominent. */
 .duration {
-  font-size: 15px;
-  font-weight: 700;
+  font: 600 15px/1.3 var(--mono);
   font-variant-numeric: tabular-nums;
   color: var(--accent);
 }
 .grab { flex: none; min-width: 72px; }
 
 /* -- queue --------------------------------------------------------------- */
+/* The queue is a place, not a sheet: a column of cards, shown full width
+   on the Queue screen and narrowed into the rail on Search and Library. */
 
-.queuebar {
-  position: fixed;
-  left: 0; right: 0; bottom: 0;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  min-height: var(--tap);
-  padding: 6px 16px;
-  padding-bottom: calc(6px + env(safe-area-inset-bottom));
-  background: var(--panel);
-  border-top: 1px solid var(--border);
-  cursor: pointer;
-  user-select: none;
-  z-index: 20;
-}
-.queuebar-right { color: var(--accent); font-weight: 600; }
-
-.queuepanel {
-  position: fixed;
-  left: 0; right: 0;
-  bottom: calc(var(--tap) + 12px + env(safe-area-inset-bottom));
-  max-height: 60vh;
-  overflow-y: auto;
-  background: var(--panel);
-  border-top: 1px solid var(--border);
-  padding: 10px 14px;
-  z-index: 19;
-}
+.queuepanel { display: flex; flex-direction: column; gap: 10px; }
 .job {
-  border-bottom: 1px solid var(--border);
-  padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 12px;
 }
-.job:last-child { border-bottom: none; }
+.job.needs-decision { border-color: var(--warn-line); }
+.job.settled { background: #101315; }
+.job.settled .job-title { color: var(--muted); font-weight: 500; }
+.job > .bar { margin-top: 0; }
+.job .job-detail, .job .error, .job .handoff, .job .handoff-review,
+.job .joblog { margin: 0; }
 .job-line {
   display: flex;
   justify-content: space-between;
@@ -296,34 +263,40 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
 .retry { min-height: 36px; padding: 0 14px; }
 
 /* -- overlays ------------------------------------------------------------ */
+/* Settings used to live here. It is a destination now, so the only thing
+   left that genuinely has to float over the page is the password prompt,
+   which nothing behind it is usable without. */
 
 .overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
+  padding: 16px;
   z-index: 30;
 }
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: var(--radius) var(--radius) 0 0;
-  padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+  border-radius: var(--radius);
+  padding: 18px 16px;
   width: 100%;
-  max-width: 560px;
+  max-width: 420px;
   max-height: 85vh;
   overflow-y: auto;
 }
 .panel h2 { margin: 0 0 14px; font-size: 18px; }
-.panel label {
+.panel label,
+.settingspage label {
   display: block;
   margin: 12px 0 4px;
   color: var(--muted);
   font-size: 14px;
 }
-.panel label input, .panel label select { margin-top: 4px; }
+.panel label input, .panel label select,
+.settingspage label input, .settingspage label select { margin-top: 4px; }
 .note { color: var(--muted); font-size: 13px; margin: 6px 0; }
 .panel-actions {
   display: flex;
@@ -336,7 +309,7 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: calc(var(--tap) + 24px + env(safe-area-inset-bottom));
+  bottom: 24px;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -345,49 +318,9 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   z-index: 25;
   cursor: pointer;
 }
-
-/* -- mobile layout: one-handed ------------------------------------------- */
-/* Search sits in the lower half, just above the queue bar, so thumb reach
-   covers both the field and the primary action. */
-
-.layout-mobile .searchbar {
-  position: fixed;
-  left: 0; right: 0;
-  bottom: calc(var(--tap) + 12px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-  padding-bottom: 10px;
-  z-index: 18;
-}
-.layout-mobile .results {
-  padding-bottom: calc(2 * var(--tap) + 110px + env(safe-area-inset-bottom));
-}
-.layout-mobile .queuepanel {
-  bottom: calc(2 * var(--tap) + 78px + env(safe-area-inset-bottom));
-}
 .layout-mobile .toast {
-  bottom: calc(2 * var(--tap) + 88px + env(safe-area-inset-bottom));
+  bottom: calc(var(--dock, 96px) + 12px);
 }
-
-/* -- desktop layout: same page, widened ----------------------------------- */
-
-.layout-desktop .topbar,
-.layout-desktop .searchbar,
-.layout-desktop .results,
-.layout-desktop .queuepanel {
-  max-width: 760px;
-  margin-left: auto;
-  margin-right: auto;
-}
-.layout-desktop .searchbar {
-  position: sticky;
-  top: 0;
-  z-index: 18;
-}
-.layout-desktop .results { padding-bottom: calc(var(--tap) + 40px); }
-.layout-desktop .queuepanel { left: 50%; transform: translateX(-50%); width: 100%; }
-.layout-desktop .overlay { align-items: center; }
-.layout-desktop .panel { border-radius: var(--radius); }
 
 .checkrow {
   display: flex;
@@ -449,14 +382,15 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   border-radius: 6px;
 }
 .lyricnote { flex-basis: 100%; margin: .5rem 0 0; }
-.searchbar .wordpick {
+.wordpick {
   display: flex;
   align-items: center;
   gap: .35rem;
-  font-size: .82rem;
-  opacity: .85;
+  font-size: 13px;
+  color: var(--muted);
   white-space: nowrap;
 }
+.wordpick input { width: auto; min-height: 0; flex: none; }
 
 /* Cover art on a MusicBrainz candidate: small, and the text still wraps
    around it, since the sleeve is a hint rather than the answer. */
@@ -472,14 +406,24 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
 
 /* ── Workbench shell ──────────────────────────────────────────────────
    Sidebar + header + content + queue rail on desktop; the sidebar
-   becomes a bottom tab bar and the rail a one-line strip on phone. One
-   breakpoint: content columns use minmax(0,1fr) and wrap on their own. */
+   becomes a bottom tab bar and the rail a one-line strip on phone.
 
+   The switch is the .layout-mobile / .layout-desktop class on .shell,
+   not a media query. The layout setting can force either one on any
+   screen, and having two mechanisms decide the same thing is what left
+   the last build rendering half of each design at once. */
+
+.shell { height: 100vh; height: 100dvh; }
 .workbench {
   display: grid;
+  height: 100%;
+  min-height: 0;
+}
+.layout-desktop .workbench {
   grid-template-columns: 214px minmax(0, 1fr) auto;
-  min-height: 100vh;
-  min-height: 100dvh;
+}
+.layout-mobile .workbench {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .sidebar {
@@ -488,7 +432,10 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   gap: 20px;
   padding: 16px 12px;
   border-right: 1px solid var(--line);
+  overflow-y: auto;
+  min-height: 0;
 }
+.layout-mobile .sidebar { display: none; }
 .sidebar .brand {
   display: flex;
   align-items: center;
@@ -543,23 +490,48 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   color: var(--dim);
 }
 
-.workarea { display: flex; flex-direction: column; min-width: 0; }
+/* Only the work area scrolls. The header stays put, and on phone the
+   dock is fixed over the bottom of it rather than being scrolled past. */
+.workarea {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .workhead {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: var(--bg);
   padding: 16px 20px 12px;
   border-bottom: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
-.workhead .pagetitle { font-size: 18px; font-weight: 600; margin: 0; }
-.workhead .titlerow {
+.pagetitle { font-size: 18px; font-weight: 600; margin: 0; }
+.titlerow {
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
 }
-.workhead .titlerow .grow { flex: 1; min-width: 0; }
+.titlerow .grow { flex: 1; min-width: 0; }
+/* Header controls are secondary to the page, so they sit at control
+   height rather than at the 44px a primary tap target wants. */
+.headbtn, .sortpick {
+  width: auto;
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+}
+.layout-mobile .headbtn, .layout-mobile .sortpick { min-height: var(--tap); }
 .workbody { padding: 18px 20px 24px; min-width: 0; }
+.workbody > h3 { font-size: 15px; font-weight: 600; margin: 20px 0 6px; }
+.workbody > .pagetitle + .note { margin-top: 0; }
 
 .queuerail {
   width: 312px;
@@ -570,7 +542,9 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   flex-direction: column;
   gap: 12px;
   overflow-y: auto;
+  min-height: 0;
 }
+.layout-mobile .queuerail { display: none; }
 .railhead {
   display: flex;
   align-items: baseline;
@@ -733,6 +707,9 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
 .statcard .value.good { color: var(--accent); }
 .statcard .sub { font-size: 12px; color: var(--muted-2); }
 .statcard .sub.warn { color: var(--warn); }
+/* The scan passes are actions on a card, not the page's primary call. */
+.statcard .chiprow button { min-height: 36px; padding: 0 12px; font-size: 13px; }
+.layout-mobile .statcard .chiprow button { min-height: var(--tap); }
 
 .stackbar {
   display: flex;
@@ -789,6 +766,23 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   margin-top: 6px;
 }
 
+/* Job card actions sit on one row rather than stacking full width. */
+.jobactions { display: flex; flex-wrap: wrap; gap: 8px; }
+.jobactions .retry { min-height: 34px; padding: 0 12px; font-size: 13px; }
+.queuerail .jobactions .retry { min-height: var(--tap); }
+
+/* Settings is a page now; keep it to a readable column rather than
+   letting labels run the full width of a desktop window. */
+.settingspage { max-width: 620px; }
+.settingspage h3 {
+  font: 400 10px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--dim);
+  margin: 26px 0 0;
+}
+.settingspage h3:first-of-type { margin-top: 6px; }
+
 /* Disclosures: existing copy kept verbatim, just folded away. */
 .explain > summary {
   cursor: pointer;
@@ -802,70 +796,104 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
 .explain[open] > summary::after { content: " ⌃"; }
 .explain .note { font-size: 13px; color: var(--muted); }
 
-/* Bottom tab bar (phone). */
-.tabbar { display: none; }
+/* ── Phone dock ───────────────────────────────────────────────────────
+   The queue strip and the tab bar are one fixed block at the bottom of
+   the viewport. Nothing else on the page is positioned: the strip sits
+   above the bar because it is above it in the dock, not because a stack
+   of calc() offsets happened to agree. */
 
-@media (max-width: 900px) {
-  .workbench { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { display: none; }
-  .queuerail {
-    display: none;
-  }
-  .workbody { padding: 14px 14px 20px; }
-  .workhead { padding: 12px 14px 10px; }
-  .libhead { display: none; }
-  .librow {
-    grid-template-columns: 44px minmax(0, 1fr) auto;
-    grid-template-areas: "art name num";
-  }
-  .librow .art { grid-area: art; }
-  .librow .col-name { grid-area: name; }
-  .librow .num { grid-area: num; }
-  .librow .col-lyrics, .librow .col-format, .librow .col-added { display: none; }
-  .albumactions, .tracklist { padding-left: 4px; }
+.phonedock { display: none; }
+.layout-mobile .phonedock {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.layout-mobile .workbody {
+  padding: 14px 14px 20px;
+  /* --dock is measured at runtime and already includes the safe-area
+     inset the dock pads itself with. */
+  padding-bottom: calc(var(--dock, 96px) + 20px);
+}
+.layout-mobile .workhead { padding: 12px 14px 10px; }
+.layout-mobile .libhead { display: none; }
+.layout-mobile .librow {
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-areas: "art name num";
+}
+.layout-mobile .librow .art { grid-area: art; }
+.layout-mobile .librow .col-name { grid-area: name; }
+.layout-mobile .librow .num { grid-area: num; }
+.layout-mobile .librow .col-lyrics,
+.layout-mobile .librow .col-format,
+.layout-mobile .librow .col-added { display: none; }
+.layout-mobile .albumactions,
+.layout-mobile .tracklist { padding-left: 4px; }
+.layout-mobile .segmented { display: flex; width: 100%; }
+.layout-mobile .segmented button { flex: 1; padding: 8px 4px; }
+.layout-mobile .card { gap: 12px; padding: 10px; }
+.layout-mobile .thumb { width: 52px; height: 52px; }
+.layout-mobile .grab { min-width: 56px; min-height: var(--tap); }
 
-  .tabbar {
-    position: sticky;
-    bottom: 0;
-    display: flex;
-    gap: 4px;
-    padding: 8px 8px 16px;
-    background: var(--bg-sunken);
-    border-top: 1px solid var(--line);
-  }
-  .tabbar button {
-    flex: 1;
-    min-height: 48px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-    font-size: 11px;
-    border-radius: var(--radius-sm);
-  }
-  .tabbar button.active {
-    background: var(--panel-2);
-    color: var(--text);
-    font-weight: 600;
-  }
-  .queuestrip {
-    margin: 0 14px 10px;
-    padding: 11px 13px;
-    background: var(--panel);
-    border: 1px solid var(--border-soft);
-    border-radius: var(--radius);
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .queuestrip .row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-  .queuestrip .row .grow { flex: 1; min-width: 0; }
-  .queuestrip .link { color: var(--accent); font-size: 12px; }
+.tabbar {
+  display: flex;
+  gap: 4px;
+  padding: 8px 8px 12px;
 }
-@media (min-width: 901px) {
-  .queuestrip { display: none; }
+.tabbar button {
+  flex: 1;
+  min-height: 48px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  border-radius: var(--radius-sm);
 }
+.tabbar button.active {
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.tabbar .tabicon { display: block; }
+
+/* One line of queue, always in reach, instead of a sheet to open. */
+.queuestrip {
+  margin: 10px 14px 0;
+  padding: 11px 13px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  color: inherit;
+  min-height: 0;
+  cursor: pointer;
+}
+.queuestrip .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.queuestrip .row .grow {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queuestrip .pct { font: 400 12px/1 var(--mono); color: var(--muted-2); }
+.queuestrip .link { color: var(--accent); font-size: 12px; font-weight: 600; }
+.queuestrip .bar { margin-top: 0; height: 3px; }

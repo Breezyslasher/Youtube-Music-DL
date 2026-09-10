@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#11151b">
+  <meta name="theme-color" content="#0d0f11">
   <title>Beetdrop</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/icons/icon-192.png">
@@ -36,49 +36,88 @@
 
   <div class="workarea">
 
-  <header class="topbar">
-    <span class="brand">Beetdrop</span>
-    <span class="health" :class="healthClass" :title="healthTitle"></span>
-    <button class="iconbtn" type="button" aria-label="Settings" @click="openSettings">
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="12" cy="12" r="3"></circle>
-        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.02a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.02a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.02a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"></path>
-      </svg>
-    </button>
-  </header>
-
-  <form v-show="view === 'search'" class="searchbar" @submit.prevent="search">
-    <div class="modetoggle" role="group" aria-label="Search type">
-      <button type="button" :class="{active: searchType === 'songs'}"
-              @click="setSearchType('songs')">Songs</button>
-      <button type="button" :class="{active: searchType === 'albums'}"
-              @click="setSearchType('albums')">Albums</button>
-      <button type="button" :class="{active: searchType === 'videos'}"
-              @click="setSearchType('videos')">Videos</button>
-      <button type="button" :class="{active: searchType === 'lyrics'}"
-              @click="setSearchType('lyrics')">Lyrics</button>
-      <label v-if="searchType === 'lyrics'" class="wordpick">
-        <input type="checkbox" v-model="lyricsWordByWord"> word-by-word
-      </label>
-      <select v-if="searchType !== 'videos' && searchType !== 'lyrics'" v-model="grabFormat" class="formatpick" aria-label="Format for grabs">
-        <option value="">Format: default</option>
-        <option value="opus">Format: opus</option>
-        <option value="m4a">Format: m4a</option>
-        <option value="mp3">Format: mp3</option>
-      </select>
-    </div>
-    <div class="searchrow">
-      <input v-model="query" type="search" inputmode="search" enterkeyhint="search"
-             :placeholder="searchType === 'albums' ? 'Search an album...' : (searchType === 'videos' ? 'Search a music video...' : (searchType === 'lyrics' ? 'Search lyrics to download...' : 'Search a song...'))"
-             autocomplete="off" autocapitalize="off">
-      <button type="submit" class="primary" :disabled="searching || !query.trim()">
-        {{ searching ? 'Searching' : 'Search' }}
+  <header class="workhead">
+    <div class="titlerow">
+      <h2 class="pagetitle">{{ pageTitle }}</h2>
+      <span class="health" :class="healthClass" :title="healthTitle"></span>
+      <span v-if="view === 'queue'" class="note grow">
+        {{ activeJobs.length }} active &middot; {{ jobs.length - activeJobs.length }} done
+      </span>
+      <span v-else-if="view === 'library'" class="note grow">{{ libraryTotal }} album(s) on disk</span>
+      <span v-else-if="view === 'stats' && stats" class="note grow">scanned {{ fmtWhen(stats.scanned_at) }}</span>
+      <span v-else class="grow"></span>
+      <button v-if="view === 'library'" type="button" class="headbtn"
+              @click="loadLibrary()" :disabled="loadingLibrary">
+        {{ loadingLibrary ? 'Reading...' : 'Rescan' }}
+      </button>
+      <button v-if="view === 'stats'" type="button" class="headbtn"
+              @click="loadStats()" :disabled="loadingStats">
+        {{ loadingStats ? 'Scanning...' : 'Rescan library' }}
       </button>
     </div>
-  </form>
 
-  <main v-show="view === 'search'" class="results">
+    <template v-if="view === 'search'">
+      <form class="searchrow" @submit.prevent="search">
+        <input v-model="query" type="search" inputmode="search" enterkeyhint="search"
+               :placeholder="searchType === 'albums' ? 'Search an album...' : (searchType === 'videos' ? 'Search a music video...' : (searchType === 'lyrics' ? 'Search lyrics to download...' : 'Search a song...'))"
+               autocomplete="off" autocapitalize="off">
+        <button type="submit" class="primary" :disabled="searching || !query.trim()">
+          {{ searching ? 'Searching' : 'Search' }}
+        </button>
+      </form>
+      <div class="titlerow">
+        <div class="modetoggle segmented" role="group" aria-label="Search type">
+          <button type="button" :class="{active: searchType === 'songs'}"
+                  @click="setSearchType('songs')">Songs</button>
+          <button type="button" :class="{active: searchType === 'albums'}"
+                  @click="setSearchType('albums')">Albums</button>
+          <button type="button" :class="{active: searchType === 'videos'}"
+                  @click="setSearchType('videos')">Videos</button>
+          <button type="button" :class="{active: searchType === 'lyrics'}"
+                  @click="setSearchType('lyrics')">Lyrics</button>
+        </div>
+        <span class="grow"></span>
+        <label v-if="searchType === 'lyrics'" class="wordpick">
+          <input type="checkbox" v-model="lyricsWordByWord"> word-by-word
+        </label>
+        <label v-else-if="searchType !== 'videos'" class="formatfield">
+          <span class="label">Format</span>
+          <select v-model="grabFormat" class="formatpick" aria-label="Format for grabs">
+            <option value="">default</option>
+            <option value="opus">opus</option>
+            <option value="m4a">m4a</option>
+            <option value="mp3">mp3</option>
+          </select>
+        </label>
+      </div>
+    </template>
+
+    <template v-if="view === 'library'">
+      <div class="titlerow">
+        <input type="search" v-model="libraryFilterText" class="grow"
+               @keyup.enter="loadLibrary()" placeholder="Filter albums...">
+        <select v-model="librarySort" class="sortpick" @change="loadLibrary()">
+          <option value="added">Recently added</option>
+          <option value="az">A-Z</option>
+          <option value="size">Size</option>
+          <option value="year">Year</option>
+        </select>
+      </div>
+      <div class="chiprow">
+        <button v-for="chip in libraryChips" :key="chip.key" type="button"
+                class="chip" :class="{active: libraryFilter === chip.key,
+                                      warnchip: chip.warn && libraryFilter !== chip.key}"
+                @click="libraryFilter = chip.key; loadLibrary()">
+          {{ chip.label }}<template v-if="chip.count !== null"> &middot; {{ chip.count }}</template>
+        </button>
+      </div>
+    </template>
+  </header>
+
+  <main class="workbody">
+
+  <!-- Search ------------------------------------------------------------ -->
+  <section v-show="view === 'search'" class="results">
     <p v-if="!searched && !results.length && searchType === 'lyrics'" class="hint">
       Search Apple Music for a song and save its .lrc straight to this
       device. Nothing is matched against your library and nothing is
@@ -120,7 +159,8 @@
     </template>
     <template v-else-if="resultsType === 'songs' || resultsType === 'videos'">
       <article v-for="r in results" :key="r.video_id" class="card">
-        <img v-if="r.thumbnail_url" class="thumb" :src="r.thumbnail_url" alt="" loading="lazy">
+        <img v-if="r.thumbnail_url" class="thumb" :src="r.thumbnail_url" alt=""
+             loading="lazy" @error="hideImage">
         <div v-else class="thumb thumb-blank"></div>
         <div class="meta">
           <span class="title" :title="r.raw_title">{{ r.title }}</span>
@@ -138,7 +178,8 @@
     </template>
     <template v-else>
       <article v-for="a in results" :key="a.browse_id" class="card">
-        <img v-if="a.thumbnail_url" class="thumb" :src="a.thumbnail_url" alt="" loading="lazy">
+        <img v-if="a.thumbnail_url" class="thumb" :src="a.thumbnail_url" alt=""
+             loading="lazy" @error="hideImage">
         <div v-else class="thumb thumb-blank"></div>
         <div class="meta">
           <span class="title">{{ a.title }}</span>
@@ -151,18 +192,15 @@
         </button>
       </article>
     </template>
-  </main>
+  </section>
 
-  <div v-if="toast" class="toast" @click="toast=''">{{ toast }}</div>
-
-  <footer class="queuebar" v-show="view !== 'queue'" @click="goTo('queue')">
-    <span>{{ activeJobs.length }} active</span>
-    <span class="queuebar-right">Queue</span>
-  </footer>
-
+  <!-- Queue ------------------------------------------------------------- -->
   <section v-show="view === 'queue'" class="queuepanel">
-    <p v-if="!jobs.length" class="hint">No jobs yet.</p>
-    <article v-for="j in sortedJobs" :key="j.id" class="job">
+    <p v-if="!jobs.length" class="hint">
+      Nothing queued. Grab something from Search and it will appear here.
+    </p>
+    <article v-for="j in sortedJobs" :key="j.id" class="job"
+             :class="jobTone(j)">
       <div class="job-line">
         <span class="job-title">{{ j.title || j.video_id }}</span>
         <span class="stage" :class="'stage-' + j.stage">{{ j.stage }}</span>
@@ -171,263 +209,36 @@
         <span v-if="j.artist" class="job-artist">{{ j.artist }}<template v-if="j.kind === 'album'"> &middot; album</template></span>
         <span v-if="j.stage === 'downloading'" class="pct">{{ Math.round(j.progress) }}%</span>
       </div>
-      <p v-if="j.detail && !['done','failed','cancelled'].includes(j.stage)" class="job-detail">{{ j.detail }}</p>
-      <p v-if="j.detail && j.stage === 'done'" class="job-detail">{{ j.detail }}</p>
+      <p v-if="j.detail" class="job-detail">{{ j.detail }}</p>
       <div v-if="!['done','failed','cancelled'].includes(j.stage)" class="bar">
         <div class="bar-fill" :style="{width: j.progress + '%'}"></div>
       </div>
       <p v-if="j.stage === 'failed'" class="error">{{ j.error }}</p>
-      <details v-if="j.stage === 'failed' && j.log" class="joblog">
-        <summary>Log</summary>
-        <pre>{{ j.log }}</pre>
-      </details>
-      <button v-if="!['done','failed','cancelled'].includes(j.stage)"
-              class="retry" type="button" @click.stop="cancel(j)">Cancel</button>
-      <button v-if="['failed','cancelled'].includes(j.stage)"
-              class="retry" type="button" @click="retry(j)">Retry</button>
-      <button v-if="j.stage === 'done' && j.kind === 'album' && j.failed_tracks"
-              class="retry" type="button" @click="retry(j)">Retry failed tracks</button>
       <p v-if="j.stage === 'done' && j.inbox_state === 'unverified'" class="handoff-review">
         No MusicBrainz match - filed to _review
       </p>
       <p v-else-if="j.stage === 'done' && j.kind !== 'lyricscan'" class="handoff">
         Filed to library
       </p>
+      <details v-if="j.stage === 'failed' && j.log" class="joblog">
+        <summary>Log</summary>
+        <pre>{{ j.log }}</pre>
+      </details>
+      <div class="jobactions">
+        <button v-if="!['done','failed','cancelled'].includes(j.stage)"
+                class="retry" type="button" @click.stop="cancel(j)">Cancel</button>
+        <button v-if="['failed','cancelled'].includes(j.stage)"
+                class="retry" type="button" @click="retry(j)">Retry</button>
+        <button v-if="j.stage === 'done' && j.kind === 'album' && j.failed_tracks"
+                class="retry" type="button" @click="retry(j)">Retry failed tracks</button>
+        <button v-if="j.stage === 'done' && j.inbox_state === 'unverified'"
+                class="retry" type="button" @click="goTo('repair')">Fix match</button>
+      </div>
     </article>
   </section>
 
-  <section v-show="view === 'repair'" class="workbody">
-    <h2 class="pagetitle" style="margin-bottom:6px">Repair</h2>
-    <p class="note" style="margin-top:0">
-      Everything that needs a decision: matches the checks refused, tracks
-      filed to _review, and the lyrics passes over the whole library.
-    </p>
-      <details v-if="reviews.length" class="joblog">
-        <summary>{{ reviewTotal }} track(s) where every match was refused</summary>
-        <p class="note">
-          Apple offered these, and the checks turned them all down - wrong
-          song, a live or remix cut, or too far from your file's length.
-          Usually that is right, and sometimes it is not. Pick one to use
-          it and remember it, so a later scan never undoes your choice.
-        </p>
-        <div v-for="item in reviews" :key="item.path" class="review">
-          <p class="review-track">
-            <strong>{{ item.artist }} &mdash; {{ item.title }}</strong>
-            <span class="note"> ({{ fmtDuration(item.duration) }})</span>
-          </p>
-          <button v-for="song in item.candidates" :key="song.id"
-                  type="button" class="candidate"
-                  :disabled="decidingReview === item.path"
-                  @click="chooseReview(item, song.id)">
-            {{ song.artist }} &mdash; {{ song.title }}
-            <span class="note">
-              {{ song.album }}{{ song.year ? ' (' + song.year + ')' : '' }},
-              {{ fmtDuration(song.duration) }} &mdash; refused: {{ song.reason }}
-            </span>
-          </button>
-          <button type="button" class="retry"
-                  :disabled="decidingReview === item.path"
-                  @click="chooseReview(item, '')">None of these &mdash; leave it alone</button>
-        </div>
-        <p class="note" v-if="reviewTotal > reviews.length">
-          Showing {{ reviews.length }} of {{ reviewTotal }}.
-        </p>
-        <button type="button" class="retry" :disabled="clearingReviews"
-                @click="clearReviews">
-          {{ clearingReviews ? 'Clearing...' : 'Clear the review queue' }}
-        </button>
-        <p class="note">
-          Forgets the list only. No lyrics are deleted, and choices you
-          have already made are kept - a track still refused comes back
-          on the next scan.
-        </p>
-      </details>
-      <h3>Wrong match</h3>
-      <p class="note">
-        Say what a track really is: Beetdrop re-tags it from MusicBrainz and
-        moves it to where those tags say it belongs. The .lrc beside it
-        comes too.
-      </p>
-      <p class="note">
-        Two kinds go wrong. Grabs that could not be verified are filed under
-        _review/ with tags taken from YouTube. A grab that matched the
-        <em>wrong</em> song confidently - a cover, a re-upload, the other
-        band with a similar name - is filed as verified and looks settled,
-        so search for whatever it is wrongly called in your player.
-      </p>
-      <div class="searchrow">
-        <input type="search" v-model="libraryQuery"
-               @keyup.enter="searchLibrary"
-               placeholder="find a track in your library...">
-        <button type="button" @click="searchLibrary"
-                :disabled="loadingUnverified || !libraryQuery.trim()">Find</button>
-      </div>
-      <button type="button" @click="loadUnverified" :disabled="loadingUnverified">
-        {{ loadingUnverified ? 'Listing...' : 'Show unverified grabs (_review)' }}
-      </button>
-      <details v-if="unverified.length" class="joblog" open>
-        <summary>{{ unverifiedTotal }} track(s) to fix</summary>
-        <div v-for="track in unverified" :key="track.path" class="review">
-          <p class="review-track">
-            <strong>{{ track.artist || '?' }} &mdash; {{ track.title || track.name }}</strong>
-            <span class="note" v-if="track.duration"> ({{ fmtDuration(track.duration) }})</span>
-          </p>
-          <p class="note">{{ track.album ? track.album + ' / ' : '' }}{{ track.name }}</p>
-          <input type="search" v-model="track.queryArtist" placeholder="artist">
-          <input type="search" v-model="track.query" placeholder="song title"
-                 @keyup.enter="findMatches(track)">
-          <button type="button" :disabled="track.searching"
-                  @click="findMatches(track)">
-            {{ track.searching ? 'Looking...' : 'Find on MusicBrainz' }}
-          </button>
-          <label class="wordpick">
-            <input type="checkbox" v-model="track.move">
-            move the file to match the new tags
-          </label>
-          <button v-for="c in (track.candidates || [])" :key="c.id"
-                  type="button" class="candidate"
-                  :disabled="fixingMatch === track.path"
-                  @click="applyMatch(track, c)">
-            <img v-if="c.artwork" class="candidateart" :src="c.artwork" alt=""
-                 loading="lazy" @error="hideImage">
-            {{ c.artist }} &mdash; {{ c.title }}
-            <span class="note">
-              {{ c.album }}{{ c.year ? ' (' + c.year + ')' : '' }},
-              {{ fmtDuration(c.duration) }}<template v-if="c.release_count > 1">
-              &mdash; on {{ c.release_count }} releases</template>
-            </span>
-          </button>
-          <p class="note" v-if="track.candidates && !track.candidates.length">
-            Nothing found. Try just the song title, or check the artist.
-          </p>
-        </div>
-        <p class="note" v-if="unverifiedTotal > unverified.length">
-          Showing the first {{ unverified.length }} of {{ unverifiedTotal }}.
-        </p>
-      </details>
-
-      <h3>Lyrics</h3>
-      <button type="button" @click="loadUnmatched" :disabled="loadingUnmatched">
-        {{ loadingUnmatched ? 'Listing...' : 'Find lyrics by hand' }}
-      </button>
-      <p class="note">
-        Tracks with no .lrc at all. The review list above only holds ones
-        Apple offered something for - if it found nothing, usually the tags
-        are the reason, so search for the song yourself and pick it. Your
-        pick is remembered and a later scan will not undo it.
-      </p>
-      <details v-if="unmatched.length" class="joblog" open>
-        <summary>{{ unmatchedTotal }} track(s) with no lyrics</summary>
-        <div v-for="track in unmatched" :key="track.path" class="review">
-          <p class="review-track">
-            <strong>{{ track.artist || '?' }} &mdash; {{ track.title || track.name }}</strong>
-            <span class="note" v-if="track.duration"> ({{ fmtDuration(track.duration) }})</span>
-          </p>
-          <p class="note">{{ track.name }}</p>
-          <input type="search" v-model="track.query"
-                 @keyup.enter="searchLyricsFor(track)"
-                 placeholder="artist and song to search Apple for">
-          <button type="button" :disabled="track.searching"
-                  @click="searchLyricsFor(track)">
-            {{ track.searching ? 'Searching...' : 'Search Apple' }}
-          </button>
-          <button v-for="song in (track.results || [])" :key="song.id"
-                  type="button" class="candidate"
-                  :disabled="decidingReview === track.path"
-                  @click="useSearchResult(track, song.id)">
-            {{ song.artist }} &mdash; {{ song.title }}
-            <span class="note">
-              {{ song.album }}{{ song.year ? ' (' + song.year + ')' : '' }},
-              {{ fmtDuration(song.duration) }}
-            </span>
-          </button>
-          <p class="note" v-if="track.results && !track.results.length">
-            Nothing came back for that. Try a shorter query - just the song
-            title, or the artist and two or three words of it.
-          </p>
-          <button type="button" class="retry"
-                  :disabled="decidingReview === track.path"
-                  @click="useSearchResult(track, '')">Skip this one for good</button>
-        </div>
-        <p class="note" v-if="unmatchedTotal > unmatched.length">
-          Showing the first {{ unmatched.length }} of {{ unmatchedTotal }}.
-        </p>
-      </details>
-      <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
-        {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
-      </button>
-      <button type="button" @click="scanLyrics(true)" :disabled="scanningLyrics">
-        {{ scanningLyrics ? 'Starting...' : 'Delete bad lyrics and re-fetch' }}
-      </button>
-      <button type="button" @click="scanLyrics(false, true)" :disabled="scanningLyrics">
-        {{ scanningLyrics ? 'Starting...' : 'Upgrade existing lyrics to word-by-word' }}
-      </button>
-      <p class="note">
-        Upgrade revisits tracks whose .lrc has no per-word timing, and
-        tracks whose word timing jumps backwards mid-line, and replaces
-        the sidecar only where Apple has a good word-level version - the
-        one pass that overwrites an existing sidecar, and only ever with
-        the richer form of the same lyrics. Needs an Apple token.
-      </p>
-      <button type="button" @click="scanLyrics(false, false, true)" :disabled="scanningLyrics">
-        {{ scanningLyrics ? 'Starting...' : 'Re-render word-by-word lyrics' }}
-      </button>
-      <p class="note">
-        Apple times syllables, not words, and until v0.48.0 we put a space
-        between every one of them - so "Tumble out of bed" was written as
-        "Tum ble out of bed". Nothing in a finished .lrc says where the word
-        breaks were, so a sound file cannot be told from a spoiled one:
-        this fetches every word-by-word sidecar again and writes it
-        correctly. Only worth running once, on a library built before
-        v0.48.0. Nothing is deleted: a sidecar is replaced in place, and
-        one Apple cannot answer for now is left exactly as it was and
-        queued for review above if the fault was a refused match. Needs
-        an Apple token.
-      </p>
-      <p class="note">
-        Re-fetch deletes placeholder .lrc files first - generated junk with
-        perfectly even line timing, whatever wrote it - then looks those
-        tracks up again. Real lyrics, in any language, are never deleted.
-      </p>
-      <p class="note">
-        Scans your whole library for tracks that have no .lrc yet and
-        fetches synced lyrics for them using the source above. Artist and
-        title come from the tags, falling back to the folder and file
-        names; duration always comes from the audio. It runs in the queue
-        and can be cancelled.
-      </p>
-
-  </section>
-
-  <section v-show="view === 'library'" class="workbody">
-    <div class="workhead" style="border:0; padding:0 0 14px">
-      <div class="titlerow">
-        <h2 class="pagetitle">Library</h2>
-        <span class="note grow">{{ libraryTotal }} album(s) on disk</span>
-        <button type="button" @click="loadLibrary()" :disabled="loadingLibrary">
-          {{ loadingLibrary ? 'Reading...' : 'Rescan' }}
-        </button>
-      </div>
-      <div class="titlerow">
-        <input type="search" v-model="libraryFilterText" class="grow"
-               @keyup.enter="loadLibrary()" placeholder="Filter albums...">
-        <select v-model="librarySort" @change="loadLibrary()">
-          <option value="added">Recently added</option>
-          <option value="az">A-Z</option>
-          <option value="size">Size</option>
-          <option value="year">Year</option>
-        </select>
-      </div>
-      <div class="chiprow">
-        <button v-for="chip in libraryChips" :key="chip.key" type="button"
-                class="chip" :class="{active: libraryFilter === chip.key,
-                                      warnchip: chip.warn && libraryFilter !== chip.key}"
-                @click="libraryFilter = chip.key; loadLibrary()">
-          {{ chip.label }}<template v-if="chip.count !== null"> &middot; {{ chip.count }}</template>
-        </button>
-      </div>
-    </div>
-
+  <!-- Library ----------------------------------------------------------- -->
+  <section v-show="view === 'library'">
     <p v-if="!loadingLibrary && !libraryItems.length" class="hint">
       Nothing here yet. Grab something, or point the library path at your
       music in Settings.
@@ -471,15 +282,8 @@
     </template>
   </section>
 
-  <section v-show="view === 'stats'" class="workbody">
-    <div class="titlerow" style="margin-bottom:14px">
-      <h2 class="pagetitle">Stats</h2>
-      <span class="note grow" v-if="stats">scanned {{ fmtWhen(stats.scanned_at) }}</span>
-      <button type="button" @click="loadStats()" :disabled="loadingStats">
-        {{ loadingStats ? 'Scanning...' : 'Rescan library' }}
-      </button>
-    </div>
-
+  <!-- Stats ------------------------------------------------------------- -->
+  <section v-show="view === 'stats'">
     <p v-if="!stats && !loadingStats" class="hint">Press Rescan to read the library.</p>
 
     <template v-if="stats">
@@ -565,7 +369,7 @@
         </details>
       </div>
 
-      <div class="statcard" style="margin-top:14px">
+      <div v-if="stats.formats.length" class="statcard" style="margin-top:14px">
         <span class="label">Formats</span>
         <div class="barlist">
           <div v-for="row in stats.formats" :key="row.ext" class="barrow">
@@ -597,7 +401,7 @@
         </div>
       </div>
 
-      <div class="statcard" style="margin-top:14px">
+      <div v-if="stats.reliability.activity.length" class="statcard" style="margin-top:14px">
         <span class="label">Grabs, last {{ stats.reliability.history_days }} days</span>
         <div class="activity">
           <div v-for="day in stats.reliability.activity" :key="day.date" class="day"
@@ -615,108 +419,397 @@
     </template>
   </section>
 
-  <div v-if="settingsOpen" class="overlay" @click.self="settingsOpen = false">
-    <section class="panel">
-      <h2>Settings</h2>
-
-      <label>Layout
-        <select v-model="layout" @change="saveLayout">
-          <option value="auto">Auto (follow screen size)</option>
-          <option value="mobile">Mobile</option>
-          <option value="desktop">Desktop</option>
-        </select>
-      </label>
-
-      <label v-if="settings && !settings.music_root_locked">Music library path
-        <input v-model="draft.music_root" type="text" spellcheck="false">
-      </label>
-      <p class="note" v-if="settings && settings.music_root_locked">
-        Library: <code>{{ settings.music_root }}</code> (set by the
-        container mount; change the volume in your compose file, not here).
+  <!-- Repair ------------------------------------------------------------ -->
+  <section v-show="view === 'repair'">
+    <p class="note" style="margin-top:0">
+      Everything that needs a decision: matches the checks refused, tracks
+      filed to _review, and the lyrics passes over the whole library.
+    </p>
+    <details v-if="reviews.length" class="joblog">
+      <summary>{{ reviewTotal }} track(s) where every match was refused</summary>
+      <p class="note">
+        Apple offered these, and the checks turned them all down - wrong
+        song, a live or remix cut, or too far from your file's length.
+        Usually that is right, and sometimes it is not. Pick one to use
+        it and remember it, so a later scan never undoes your choice.
       </p>
+      <div v-for="item in reviews" :key="item.path" class="review">
+        <p class="review-track">
+          <strong>{{ item.artist }} &mdash; {{ item.title }}</strong>
+          <span class="note"> ({{ fmtDuration(item.duration) }})</span>
+        </p>
+        <button v-for="song in item.candidates" :key="song.id"
+                type="button" class="candidate"
+                :disabled="decidingReview === item.path"
+                @click="chooseReview(item, song.id)">
+          {{ song.artist }} &mdash; {{ song.title }}
+          <span class="note">
+            {{ song.album }}{{ song.year ? ' (' + song.year + ')' : '' }},
+            {{ fmtDuration(song.duration) }} &mdash; refused: {{ song.reason }}
+          </span>
+        </button>
+        <button type="button" class="retry"
+                :disabled="decidingReview === item.path"
+                @click="chooseReview(item, '')">None of these &mdash; leave it alone</button>
+      </div>
+      <p class="note" v-if="reviewTotal > reviews.length">
+        Showing {{ reviews.length }} of {{ reviewTotal }}.
+      </p>
+      <button type="button" class="retry" :disabled="clearingReviews"
+              @click="clearReviews">
+        {{ clearingReviews ? 'Clearing...' : 'Clear the review queue' }}
+      </button>
+      <p class="note">
+        Forgets the list only. No lyrics are deleted, and choices you
+        have already made are kept - a track still refused comes back
+        on the next scan.
+      </p>
+    </details>
+
+    <h3>Wrong match</h3>
+    <p class="note">
+      Say what a track really is: Beetdrop re-tags it from MusicBrainz and
+      moves it to where those tags say it belongs. The .lrc beside it
+      comes too.
+    </p>
+    <details class="explain">
+      <summary>Which tracks end up here?</summary>
+      <p class="note">
+        Two kinds go wrong. Grabs that could not be verified are filed under
+        _review/ with tags taken from YouTube. A grab that matched the
+        <em>wrong</em> song confidently - a cover, a re-upload, the other
+        band with a similar name - is filed as verified and looks settled,
+        so search for whatever it is wrongly called in your player.
+      </p>
+    </details>
+    <div class="searchrow">
+      <input type="search" v-model="libraryQuery"
+             @keyup.enter="searchLibrary"
+             placeholder="find a track in your library...">
+      <button type="button" @click="searchLibrary"
+              :disabled="loadingUnverified || !libraryQuery.trim()">Find</button>
+    </div>
+    <div class="jobactions" style="margin-top:10px">
+      <button type="button" @click="loadUnverified" :disabled="loadingUnverified">
+        {{ loadingUnverified ? 'Listing...' : 'Show unverified grabs (_review)' }}
+      </button>
+    </div>
+    <details v-if="unverified.length" class="joblog" open>
+      <summary>{{ unverifiedTotal }} track(s) to fix</summary>
+      <div v-for="track in unverified" :key="track.path" class="review">
+        <p class="review-track">
+          <strong>{{ track.artist || '?' }} &mdash; {{ track.title || track.name }}</strong>
+          <span class="note" v-if="track.duration"> ({{ fmtDuration(track.duration) }})</span>
+        </p>
+        <p class="note">{{ track.album ? track.album + ' / ' : '' }}{{ track.name }}</p>
+        <input type="search" v-model="track.queryArtist" placeholder="artist">
+        <input type="search" v-model="track.query" placeholder="song title"
+               @keyup.enter="findMatches(track)">
+        <button type="button" :disabled="track.searching"
+                @click="findMatches(track)">
+          {{ track.searching ? 'Looking...' : 'Find on MusicBrainz' }}
+        </button>
+        <label class="wordpick">
+          <input type="checkbox" v-model="track.move">
+          move the file to match the new tags
+        </label>
+        <button v-for="c in (track.candidates || [])" :key="c.id"
+                type="button" class="candidate"
+                :disabled="fixingMatch === track.path"
+                @click="applyMatch(track, c)">
+          <img v-if="c.artwork" class="candidateart" :src="c.artwork" alt=""
+               loading="lazy" @error="hideImage">
+          {{ c.artist }} &mdash; {{ c.title }}
+          <span class="note">
+            {{ c.album }}{{ c.year ? ' (' + c.year + ')' : '' }},
+            {{ fmtDuration(c.duration) }}<template v-if="c.release_count > 1">
+            &mdash; on {{ c.release_count }} releases</template>
+          </span>
+        </button>
+        <p class="note" v-if="track.candidates && !track.candidates.length">
+          Nothing found. Try just the song title, or check the artist.
+        </p>
+      </div>
+      <p class="note" v-if="unverifiedTotal > unverified.length">
+        Showing the first {{ unverified.length }} of {{ unverifiedTotal }}.
+      </p>
+    </details>
+
+    <h3>Lyrics</h3>
+    <div class="jobactions">
+      <button type="button" @click="loadUnmatched" :disabled="loadingUnmatched">
+        {{ loadingUnmatched ? 'Listing...' : 'Find lyrics by hand' }}
+      </button>
+    </div>
+    <p class="note">
+      Tracks with no .lrc at all. The review list above only holds ones
+      Apple offered something for - if it found nothing, usually the tags
+      are the reason, so search for the song yourself and pick it. Your
+      pick is remembered and a later scan will not undo it.
+    </p>
+    <details v-if="unmatched.length" class="joblog" open>
+      <summary>{{ unmatchedTotal }} track(s) with no lyrics</summary>
+      <div v-for="track in unmatched" :key="track.path" class="review">
+        <p class="review-track">
+          <strong>{{ track.artist || '?' }} &mdash; {{ track.title || track.name }}</strong>
+          <span class="note" v-if="track.duration"> ({{ fmtDuration(track.duration) }})</span>
+        </p>
+        <p class="note">{{ track.name }}</p>
+        <input type="search" v-model="track.query"
+               @keyup.enter="searchLyricsFor(track)"
+               placeholder="artist and song to search Apple for">
+        <button type="button" :disabled="track.searching"
+                @click="searchLyricsFor(track)">
+          {{ track.searching ? 'Searching...' : 'Search Apple' }}
+        </button>
+        <button v-for="song in (track.results || [])" :key="song.id"
+                type="button" class="candidate"
+                :disabled="decidingReview === track.path"
+                @click="useSearchResult(track, song.id)">
+          {{ song.artist }} &mdash; {{ song.title }}
+          <span class="note">
+            {{ song.album }}{{ song.year ? ' (' + song.year + ')' : '' }},
+            {{ fmtDuration(song.duration) }}
+          </span>
+        </button>
+        <p class="note" v-if="track.results && !track.results.length">
+          Nothing came back for that. Try a shorter query - just the song
+          title, or the artist and two or three words of it.
+        </p>
+        <button type="button" class="retry"
+                :disabled="decidingReview === track.path"
+                @click="useSearchResult(track, '')">Skip this one for good</button>
+      </div>
+      <p class="note" v-if="unmatchedTotal > unmatched.length">
+        Showing the first {{ unmatched.length }} of {{ unmatchedTotal }}.
+      </p>
+    </details>
+    <div class="jobactions">
+      <button type="button" @click="scanLyrics(false)" :disabled="scanningLyrics">
+        {{ scanningLyrics ? 'Starting scan...' : 'Fetch lyrics for existing library' }}
+      </button>
+      <button type="button" @click="scanLyrics(true)" :disabled="scanningLyrics">
+        {{ scanningLyrics ? 'Starting...' : 'Delete bad lyrics and re-fetch' }}
+      </button>
+      <button type="button" @click="scanLyrics(false, true)" :disabled="scanningLyrics">
+        {{ scanningLyrics ? 'Starting...' : 'Upgrade existing lyrics to word-by-word' }}
+      </button>
+      <button type="button" @click="scanLyrics(false, false, true)" :disabled="scanningLyrics">
+        {{ scanningLyrics ? 'Starting...' : 'Re-render word-by-word lyrics' }}
+      </button>
+    </div>
+    <details class="explain">
+      <summary>What do these passes do?</summary>
+      <p class="note">
+        Upgrade revisits tracks whose .lrc has no per-word timing, and
+        tracks whose word timing jumps backwards mid-line, and replaces
+        the sidecar only where Apple has a good word-level version - the
+        one pass that overwrites an existing sidecar, and only ever with
+        the richer form of the same lyrics. Needs an Apple token.
+      </p>
+      <p class="note">
+        Apple times syllables, not words, and until v0.48.0 we put a space
+        between every one of them - so "Tumble out of bed" was written as
+        "Tum ble out of bed". Nothing in a finished .lrc says where the word
+        breaks were, so a sound file cannot be told from a spoiled one:
+        this fetches every word-by-word sidecar again and writes it
+        correctly. Only worth running once, on a library built before
+        v0.48.0. Nothing is deleted: a sidecar is replaced in place, and
+        one Apple cannot answer for now is left exactly as it was and
+        queued for review above if the fault was a refused match. Needs
+        an Apple token.
+      </p>
+      <p class="note">
+        Re-fetch deletes placeholder .lrc files first - generated junk with
+        perfectly even line timing, whatever wrote it - then looks those
+        tracks up again. Real lyrics, in any language, are never deleted.
+      </p>
+      <p class="note">
+        Scans your whole library for tracks that have no .lrc yet and
+        fetches synced lyrics for them using the source above. Artist and
+        title come from the tags, falling back to the folder and file
+        names; duration always comes from the audio. It runs in the queue
+        and can be cancelled.
+      </p>
+    </details>
+  </section>
+
+  <!-- Settings ---------------------------------------------------------- -->
+  <section v-show="view === 'settings'" class="settingspage">
+
+    <h3>Library &amp; paths</h3>
+
+    <label>Layout
+      <select v-model="layout" @change="saveLayout">
+        <option value="auto">Auto (follow screen size)</option>
+        <option value="mobile">Mobile</option>
+        <option value="desktop">Desktop</option>
+      </select>
+    </label>
+
+    <label v-if="settings && !settings.music_root_locked">Music library path
+      <input v-model="draft.music_root" type="text" spellcheck="false">
+    </label>
+    <p class="note" v-if="settings && settings.music_root_locked">
+      Library: <code>{{ settings.music_root }}</code> (set by the
+      container mount; change the volume in your compose file, not here).
+    </p>
+    <details class="explain">
+      <summary>What happens to a grab?</summary>
       <p class="note">
         Each grab is matched against MusicBrainz, gets full tags and
         cover art, and is filed straight into the library. Grabs that
         cannot be verified go to the _review folder instead.
       </p>
+    </details>
 
-      <label v-if="settings && !settings.video_root_locked">Music-video library path
-        <input v-model="draft.video_root" type="text" spellcheck="false">
-      </label>
-      <p class="note" v-if="settings && settings.video_root_locked">
-        Videos: <code>{{ settings.video_root }}</code> (set by VIDEO_PATH;
-        change the volume in your compose file, not here).
-      </p>
-      <label>Max video quality
-        <select v-model.number="draft.video_max_height">
-          <option :value="720">720p</option>
-          <option :value="1080">1080p (default)</option>
-          <option :value="1440">1440p</option>
-          <option :value="2160">2160p (4K)</option>
-          <option :value="0">Best available</option>
-        </select>
-      </label>
+    <label v-if="settings && !settings.video_root_locked">Music-video library path
+      <input v-model="draft.video_root" type="text" spellcheck="false">
+    </label>
+    <p class="note" v-if="settings && settings.video_root_locked">
+      Videos: <code>{{ settings.video_root }}</code> (set by VIDEO_PATH;
+      change the volume in your compose file, not here).
+    </p>
+    <label>Max video quality
+      <select v-model.number="draft.video_max_height">
+        <option :value="720">720p</option>
+        <option :value="1080">1080p (default)</option>
+        <option :value="1440">1440p</option>
+        <option :value="2160">2160p (4K)</option>
+        <option :value="0">Best available</option>
+      </select>
+    </label>
+    <details class="explain">
+      <summary>Where do music videos go?</summary>
       <p class="note">
         The Videos tab grabs music videos as mp4 and files them Kodi-style
         ({Artist}/{Artist} - {Title}.mp4) with a .nfo and -poster.jpg
         beside each one. Empty path defaults to a "Music Videos" folder in
         your music library.
       </p>
+    </details>
 
-      <label>Output format
-        <select v-model="draft.output_format">
-          <option value="opus">opus (default)</option>
-          <option value="m4a">m4a</option>
-          <option value="mp3">mp3</option>
-        </select>
-      </label>
+    <label>Output format
+      <select v-model="draft.output_format">
+        <option value="opus">opus (default)</option>
+        <option value="m4a">m4a</option>
+        <option value="mp3">mp3</option>
+      </select>
+    </label>
+    <details class="explain">
+      <summary>Why no FLAC?</summary>
       <p class="note">
         No FLAC or WAV: the source tops out around 160 kbps Opus / 256 kbps
         AAC, so a lossless container would only be a bigger file that
         misreports its own quality.
       </p>
+    </details>
 
-      <label v-if="draft.output_format === 'mp3'">Bitrate (mp3 only)
-        <input v-model="draft.bitrate" type="text" inputmode="numeric" placeholder="192">
-      </label>
+    <label v-if="draft.output_format === 'mp3'">Bitrate (mp3 only)
+      <input v-model="draft.bitrate" type="text" inputmode="numeric" placeholder="192">
+    </label>
 
-      <p class="note" v-if="health">
-        Library {{ health.library_writable ? 'is writable.' : 'problem: ' + health.library_problem }}
-      </p>
+    <p class="note" v-if="health">
+      Library {{ health.library_writable ? 'is writable.' : 'problem: ' + health.library_problem }}
+    </p>
 
-      <label class="checkrow">
-        <input type="checkbox" v-model="draft.lyrics">
-        Synced lyrics (writes a .lrc sidecar from LRCLIB when timed
-        lyrics exist)
-      </label>
-      <label>Primary lyrics source
-        <select v-model="draft.lyrics_provider">
-          <option value="lrclib">LRCLIB (free, no token)</option>
-          <option value="musixmatch">Musixmatch (needs token)</option>
-          <option value="apple">Apple Music (best coverage, needs token)</option>
-        </select>
-      </label>
-      <p class="note">
-        The other source is the fallback. Musixmatch needs a usertoken
-        that rotates -
-        <template v-if="settings && settings.musixmatch_token_set">a token is set.</template>
-        <template v-else>no token set; fetch one.</template>
-      </p>
+    <h3>Lyrics</h3>
+
+    <label class="checkrow">
+      <input type="checkbox" v-model="draft.lyrics">
+      Synced lyrics (writes a .lrc sidecar from LRCLIB when timed
+      lyrics exist)
+    </label>
+    <label>Primary lyrics source
+      <select v-model="draft.lyrics_provider">
+        <option value="lrclib">LRCLIB (free, no token)</option>
+        <option value="musixmatch">Musixmatch (needs token)</option>
+        <option value="apple">Apple Music (best coverage, needs token)</option>
+      </select>
+    </label>
+    <p class="note">
+      The other source is the fallback. Musixmatch needs a usertoken
+      that rotates -
+      <template v-if="settings && settings.musixmatch_token_set">a token is set.</template>
+      <template v-else>no token set; fetch one.</template>
+    </p>
+    <div class="jobactions">
       <button type="button" @click="fetchMxmToken" :disabled="fetchingToken">
         {{ fetchingToken ? 'Fetching token...' : 'Fetch Musixmatch token' }}
       </button>
+    </div>
 
-      <label>Apple Music token
-        <input v-model="draft.apple_token" type="password" spellcheck="false"
-               autocomplete="off"
-               :placeholder="settings && settings.apple_token_set
-                             ? 'a token is saved - paste a new one to replace it'
-                             : 'paste your media-user-token'">
-      </label>
-      <label>Apple storefront
-        <input v-model="draft.apple_storefront" type="text" spellcheck="false"
-               placeholder="us">
-      </label>
+    <label class="checkrow">
+      <input type="checkbox" v-model="draft.word_lyrics">
+      Word-by-word timing (Enhanced LRC) when the source has it
+    </label>
+    <details class="explain">
+      <summary>Will my player understand it?</summary>
+      <p class="note">
+        Writes inline &lt;mm:ss.xx&gt; tags before each word. Only turn this
+        on if your player understands Enhanced (A2) LRC - Plex, Navidrome,
+        Jellyfin and Kodi are line-level and will show the tags as text.
+      </p>
+    </details>
+    <div class="jobactions">
+      <button type="button" @click="checkLyrics" :disabled="checkingLyrics">
+        {{ checkingLyrics ? 'Checking...' : 'Check library' }}
+      </button>
+    </div>
+    <p class="note" v-if="lyricsStats">
+      {{ lyricsStats.with_lyrics }} of {{ lyricsStats.audio_files }} tracks
+      have lyrics ({{ lyricsStats.coverage_pct }}%) &mdash;
+      {{ lyricsStats.word_level }} word-by-word ({{ lyricsStats.word_pct }}% of
+      those), {{ lyricsStats.line_level }} line-level,
+      {{ lyricsStats.missing }} with none.
+      <template v-if="lyricsStats.placeholder">
+        {{ lyricsStats.placeholder }} still look like placeholder junk.
+      </template>
+      <template v-if="lyricsStats.backwards">
+        {{ lyricsStats.backwards }} of the word-by-word ones have timing that
+        jumps backwards mid-line &mdash; run the upgrade pass to repair them.
+      </template>
+    </p>
+    <details v-if="lyricsStats && lyricsStats.backwards_files.length" class="joblog">
+      <summary>{{ lyricsStats.backwards }} with backwards word timing</summary>
+      <pre>{{ lyricsStats.backwards_files.join('\n') }}</pre>
+      <p class="note" v-if="lyricsStats.backwards > lyricsStats.backwards_files.length">
+        Showing the first {{ lyricsStats.backwards_files.length }}. For the
+        full list: <code>scan-lyrics --list broken</code>
+      </p>
+    </details>
+    <details v-if="lyricsStats && lyricsStats.line_level_files.length" class="joblog">
+      <summary>{{ lyricsStats.line_level }} without word-by-word</summary>
+      <pre>{{ lyricsStats.line_level_files.join('\n') }}</pre>
+      <p class="note" v-if="lyricsStats.line_level > lyricsStats.line_level_files.length">
+        Showing the first {{ lyricsStats.line_level_files.length }}. For the
+        full list: <code>scan-lyrics --list line</code>
+      </p>
+    </details>
+    <details v-if="lyricsStats && lyricsStats.missing_files.length" class="joblog">
+      <summary>{{ lyricsStats.missing }} with no lyrics at all</summary>
+      <pre>{{ lyricsStats.missing_files.join('\n') }}</pre>
+    </details>
+    <details v-if="lyricsStats && lyricsStats.placeholder_files.length" class="joblog">
+      <summary>{{ lyricsStats.placeholder }} placeholder junk</summary>
+      <pre>{{ lyricsStats.placeholder_files.join('\n') }}</pre>
+    </details>
+
+    <h3>Apple account</h3>
+
+    <label>Apple Music token
+      <input v-model="draft.apple_token" type="password" spellcheck="false"
+             autocomplete="off"
+             :placeholder="settings && settings.apple_token_set
+                           ? 'a token is saved - paste a new one to replace it'
+                           : 'paste your media-user-token'">
+    </label>
+    <label>Apple storefront
+      <input v-model="draft.apple_storefront" type="text" spellcheck="false"
+             placeholder="us">
+    </label>
+    <details class="explain">
+      <summary>Why does Apple need a token?</summary>
       <p class="note">
         Apple has the best coverage of the three, including older catalogue
         the others miss, and is the only source with per-word timing. It
@@ -728,147 +821,182 @@
         change or a lapsed subscription invalidates it - so test it here
         if Apple stops returning lyrics.
       </p>
+    </details>
+    <div class="jobactions">
       <button type="button" @click="testAppleToken" :disabled="testingApple">
         {{ testingApple ? 'Testing...' : 'Test Apple token' }}
       </button>
-      <p class="note" v-if="appleStatus">{{ appleStatus }}</p>
+    </div>
+    <p class="note" v-if="appleStatus">{{ appleStatus }}</p>
 
-      <details class="applesignin">
-        <summary>Or sign in to Apple and mint the token automatically</summary>
-        <p class="note">
-          Your Apple ID password is used only for the sign-in exchange: it
-          is never stored, never logged, and never sent to Apple - the
-          protocol proves you know it without transmitting it. Only the
-          session is kept (0600, in /config), which is what lets the token
-          be renewed later without signing in again.
-        </p>
-        <label>Apple ID
-          <input v-model="appleId" type="email" autocomplete="off"
-                 spellcheck="false" placeholder="you@example.com">
-        </label>
-        <label>Password
-          <input v-model="applePassword" type="password" autocomplete="off">
-        </label>
+    <details class="applesignin explain">
+      <summary>Or sign in to Apple and mint the token automatically</summary>
+      <p class="note">
+        Your Apple ID password is used only for the sign-in exchange: it
+        is never stored, never logged, and never sent to Apple - the
+        protocol proves you know it without transmitting it. Only the
+        session is kept (0600, in /config), which is what lets the token
+        be renewed later without signing in again.
+      </p>
+      <label>Apple ID
+        <input v-model="appleId" type="email" autocomplete="off"
+               spellcheck="false" placeholder="you@example.com">
+      </label>
+      <label>Password
+        <input v-model="applePassword" type="password" autocomplete="off">
+      </label>
+      <div class="jobactions">
         <button type="button" @click="appleSignIn" :disabled="signingInApple">
           {{ signingInApple ? 'Signing in...' : 'Sign in to Apple' }}
         </button>
-        <template v-if="appleFlowId">
-          <label>Verification code
-            <input v-model="appleCode" type="text" inputmode="numeric"
-                   autocomplete="one-time-code" placeholder="6-digit code">
-          </label>
+      </div>
+      <template v-if="appleFlowId">
+        <label>Verification code
+          <input v-model="appleCode" type="text" inputmode="numeric"
+                 autocomplete="one-time-code" placeholder="6-digit code">
+        </label>
+        <div class="jobactions">
           <button type="button" @click="appleVerify" :disabled="signingInApple">
             {{ signingInApple ? 'Verifying...' : 'Verify code' }}
           </button>
-        </template>
+        </div>
+      </template>
+      <div class="jobactions">
         <button type="button" @click="appleSignOut">Sign out of Apple</button>
-      </details>
+      </div>
+    </details>
 
-      <label class="checkrow">
-        <input type="checkbox" v-model="draft.word_lyrics">
-        Word-by-word timing (Enhanced LRC) when the source has it
-      </label>
-      <p class="note">
-        Writes inline &lt;mm:ss.xx&gt; tags before each word. Only turn this
-        on if your player understands Enhanced (A2) LRC - Plex, Navidrome,
-        Jellyfin and Kodi are line-level and will show the tags as text.
-      </p>
-      <button type="button" @click="checkLyrics" :disabled="checkingLyrics">
-        {{ checkingLyrics ? 'Checking...' : 'Check library' }}
-      </button>
-      <p class="note" v-if="lyricsStats">
-        {{ lyricsStats.with_lyrics }} of {{ lyricsStats.audio_files }} tracks
-        have lyrics ({{ lyricsStats.coverage_pct }}%) &mdash;
-        {{ lyricsStats.word_level }} word-by-word ({{ lyricsStats.word_pct }}% of
-        those), {{ lyricsStats.line_level }} line-level,
-        {{ lyricsStats.missing }} with none.
-        <template v-if="lyricsStats.placeholder">
-          {{ lyricsStats.placeholder }} still look like placeholder junk.
-        </template>
-        <template v-if="lyricsStats.backwards">
-          {{ lyricsStats.backwards }} of the word-by-word ones have timing that
-          jumps backwards mid-line &mdash; run the upgrade pass to repair them.
-        </template>
-      </p>
-      <details v-if="lyricsStats && lyricsStats.backwards_files.length" class="joblog">
-        <summary>{{ lyricsStats.backwards }} with backwards word timing</summary>
-        <pre>{{ lyricsStats.backwards_files.join('\n') }}</pre>
-        <p class="note" v-if="lyricsStats.backwards > lyricsStats.backwards_files.length">
-          Showing the first {{ lyricsStats.backwards_files.length }}. For the
-          full list: <code>scan-lyrics --list broken</code>
-        </p>
-      </details>
-      <details v-if="lyricsStats && lyricsStats.line_level_files.length" class="joblog">
-        <summary>{{ lyricsStats.line_level }} without word-by-word</summary>
-        <pre>{{ lyricsStats.line_level_files.join('\n') }}</pre>
-        <p class="note" v-if="lyricsStats.line_level > lyricsStats.line_level_files.length">
-          Showing the first {{ lyricsStats.line_level_files.length }}. For the
-          full list: <code>scan-lyrics --list line</code>
-        </p>
-      </details>
-      <details v-if="lyricsStats && lyricsStats.missing_files.length" class="joblog">
-        <summary>{{ lyricsStats.missing }} with no lyrics at all</summary>
-        <pre>{{ lyricsStats.missing_files.join('\n') }}</pre>
-      </details>
-      <details v-if="lyricsStats && lyricsStats.placeholder_files.length" class="joblog">
-        <summary>{{ lyricsStats.placeholder }} placeholder junk</summary>
-        <pre>{{ lyricsStats.placeholder_files.join('\n') }}</pre>
-      </details>
-      <label>Concurrent downloads
-        <select v-model="draft.concurrency">
-          <option :value="1">1</option>
-          <option :value="2">2 (default)</option>
-          <option :value="3">3</option>
-          <option :value="4">4</option>
-        </select>
-      </label>
-      <p class="note">Applies after a container restart.</p>
+    <h3>Downloads</h3>
 
-      <label class="checkrow">
-        <input type="checkbox" :checked="notifyOnDone" @change="requestNotifications">
-        Notify me when a grab is filed
-      </label>
+    <label>Concurrent downloads
+      <select v-model="draft.concurrency">
+        <option :value="1">1</option>
+        <option :value="2">2 (default)</option>
+        <option :value="3">3</option>
+        <option :value="4">4</option>
+      </select>
+    </label>
+    <p class="note">Applies after a container restart.</p>
+
+    <label class="checkrow">
+      <input type="checkbox" :checked="notifyOnDone" @change="requestNotifications">
+      Notify me when a grab is filed
+    </label>
+    <details class="explain">
+      <summary>What if I refuse the permission?</summary>
       <p class="note">
         A browser notification naming where the track landed. Needs the
         browser's permission; without it the usual toast still appears, so
         the outcome is never only in a notification that was refused.
       </p>
+    </details>
 
-      <label>Cookies (paste cookies.txt content for throttled or region-locked videos)
-        <textarea v-model="draft.cookies" rows="3" spellcheck="false"
-                  :placeholder="settings && settings.cookies_set
-                    ? 'Cookies are set - paste here to replace them'
-                    : 'Netscape cookies.txt format'"></textarea>
-      </label>
-      <button v-if="settings && settings.cookies_set" type="button" @click="clearCookies">
-        Clear cookies
-      </button>
+    <label>Cookies (paste cookies.txt content for throttled or region-locked videos)
+      <textarea v-model="draft.cookies" rows="3" spellcheck="false"
+                :placeholder="settings && settings.cookies_set
+                  ? 'Cookies are set - paste here to replace them'
+                  : 'Netscape cookies.txt format'"></textarea>
+    </label>
+    <div class="jobactions" v-if="settings && settings.cookies_set">
+      <button type="button" @click="clearCookies">Clear cookies</button>
+    </div>
 
-      <label>Password (leave blank to keep current)
-        <input v-model="draft.new_password" type="password" autocomplete="new-password">
-      </label>
+    <h3>Access &amp; updates</h3>
 
-      <p class="note" v-if="settings">
-        yt-dlp {{ settings.ytdlp_version }} &middot; Beetdrop server
-        {{ health ? health.version : '' }}
-        <template v-if="health"> &middot; {{ health.failures_last_hour }} failed in the last hour
-          &middot; {{ health.library_free_mb }} MB free</template>
-      </p>
+    <label>Password (leave blank to keep current)
+      <input v-model="draft.new_password" type="password" autocomplete="new-password">
+    </label>
+
+    <p class="note" v-if="settings">
+      yt-dlp {{ settings.ytdlp_version }} &middot; Beetdrop server
+      {{ health ? health.version : '' }}
+      <template v-if="health"> &middot; {{ health.failures_last_hour }} failed in the last hour
+        &middot; {{ health.library_free_mb }} MB free</template>
+    </p>
+    <div class="jobactions">
       <button type="button" @click="updateYtdlp" :disabled="updatingYtdlp">
         {{ updatingYtdlp ? 'Updating yt-dlp...' : 'Update yt-dlp' }}
       </button>
+    </div>
+    <details class="explain">
+      <summary>When should I update yt-dlp?</summary>
       <p class="note">
         A wave of failed grabs usually means YouTube changed something and
         yt-dlp needs updating. Updates apply immediately - no restart -
         and persist across restarts. This can take up to a minute.
       </p>
+    </details>
 
-      <div class="panel-actions">
-        <button type="button" @click="settingsOpen = false">Cancel</button>
-        <button type="button" class="primary" @click="saveSettings">Save</button>
+    <div class="panel-actions">
+      <button type="button" @click="openSettings">Discard changes</button>
+      <button type="button" class="primary" @click="saveSettings">Save</button>
+    </div>
+  </section>
+
+  </main>
+  </div><!-- /workarea -->
+
+  <aside class="queuerail" v-show="railVisible">
+    <div class="railhead">
+      <span class="label">Queue</span>
+      <span class="count">{{ activeJobs.length }} active &middot; {{ jobs.length - activeJobs.length }} done</span>
+    </div>
+    <p v-if="!jobs.length" class="note">Nothing queued.</p>
+    <article v-for="j in sortedJobs.slice(0, 10)" :key="j.id" class="job"
+             :class="jobTone(j)">
+      <div class="job-line">
+        <span class="job-title">{{ j.title || j.video_id }}</span>
+        <span class="stage" :class="'stage-' + j.stage">{{ j.stage }}</span>
       </div>
-    </section>
+      <p v-if="j.detail" class="job-detail">{{ j.detail }}</p>
+      <div v-if="!['done','failed','cancelled'].includes(j.stage)" class="bar">
+        <div class="bar-fill" :style="{width: j.progress + '%'}"></div>
+      </div>
+      <p v-if="j.stage === 'done' && j.inbox_state === 'unverified'" class="handoff-review">
+        No MusicBrainz match - filed to _review
+      </p>
+      <div class="jobactions">
+        <button v-if="j.stage === 'done' && j.inbox_state === 'unverified'"
+                class="retry" type="button" @click="goTo('repair')">Fix match</button>
+        <button v-if="['failed','cancelled'].includes(j.stage)"
+                class="retry" type="button" @click="retry(j)">Retry</button>
+        <button v-if="!['done','failed','cancelled'].includes(j.stage)"
+                class="retry" type="button" @click.stop="cancel(j)">Cancel</button>
+      </div>
+    </article>
+    <button v-if="jobs.length > 10" type="button" @click="goTo('queue')">Show all</button>
+  </aside>
+
+  </div><!-- /workbench -->
+
+  <!-- Phone dock: the queue strip and the tab bar, one fixed block. -->
+  <div class="phonedock" ref="dock">
+    <button v-if="stripJob" type="button" class="queuestrip" @click="goTo('queue')">
+      <span class="row">
+        <span class="grow">{{ stripJob.title || stripJob.video_id }}</span>
+        <span v-if="!['done','failed','cancelled'].includes(stripJob.stage)"
+              class="pct">{{ Math.round(stripJob.progress) }}%</span>
+        <span class="link">Queue</span>
+      </span>
+      <span class="bar">
+        <span class="bar-fill" :style="{width: stripJob.progress + '%'}"></span>
+      </span>
+    </button>
+    <nav class="tabbar">
+      <button v-for="item in tabItems" :key="item.view" type="button"
+              :class="{active: view === item.view}" @click="goTo(item.view)"
+              :aria-label="item.label">
+        <svg class="tabicon" viewBox="0 0 24 24" width="19" height="19" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path v-for="(d, i) in item.icon" :key="i" :d="d"></path>
+        </svg>
+        <span class="tabtext">{{ item.label }}</span>
+      </button>
+    </nav>
   </div>
+
+  <div v-if="toast" class="toast" @click="toast=''">{{ toast }}</div>
 
   <div v-if="passwordNeeded" class="overlay">
     <section class="panel">
@@ -884,45 +1012,6 @@
       </form>
     </section>
   </div>
-
-  <nav class="tabbar">
-    <button v-for="item in tabItems" :key="item.view" type="button"
-            :class="{active: view === item.view}" @click="goTo(item.view)">
-      <span>{{ item.label }}</span>
-    </button>
-  </nav>
-
-  </div><!-- /workarea -->
-
-  <aside class="queuerail" v-show="view === 'search' || view === 'library'">
-    <div class="railhead">
-      <span class="label">Queue</span>
-      <span class="count">{{ activeJobs.length }} active &middot; {{ jobs.length - activeJobs.length }} done</span>
-    </div>
-    <p v-if="!jobs.length" class="note">Nothing queued.</p>
-    <article v-for="j in sortedJobs.slice(0, 10)" :key="j.id" class="job">
-      <div class="job-line">
-        <span class="job-title">{{ j.title || j.video_id }}</span>
-        <span class="stage" :class="'stage-' + j.stage">{{ j.stage }}</span>
-      </div>
-      <p v-if="j.detail" class="job-detail">{{ j.detail }}</p>
-      <div v-if="!['done','failed','cancelled'].includes(j.stage)" class="bar">
-        <div class="bar-fill" :style="{width: j.progress + '%'}"></div>
-      </div>
-      <p v-if="j.stage === 'done' && j.inbox_state === 'unverified'" class="handoff-review">
-        No MusicBrainz match - filed to _review
-      </p>
-      <button v-if="j.stage === 'done' && j.inbox_state === 'unverified'"
-              class="retry" type="button" @click="goTo('repair')">Fix match</button>
-      <button v-if="['failed','cancelled'].includes(j.stage)"
-              class="retry" type="button" @click="retry(j)">Retry</button>
-      <button v-if="!['done','failed','cancelled'].includes(j.stage)"
-              class="retry" type="button" @click.stop="cancel(j)">Cancel</button>
-    </article>
-    <button type="button" @click="goTo('queue')">Show all</button>
-  </aside>
-
-  </div><!-- /workbench -->
 
 </div>
 </div>

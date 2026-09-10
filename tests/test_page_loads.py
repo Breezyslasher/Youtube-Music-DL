@@ -103,15 +103,34 @@ def browser(tmp_path_factory):
             engine.close()
 
 
-@pytest.fixture
-def page(browser):
-    engine, url = browser
-    tab = engine.new_page()
+def open_tab(engine, url, **options):
+    tab = engine.new_page(**options)
     problems = []
     tab.on("pageerror", lambda err: problems.append(str(err)))
     tab.on("console",
            lambda msg: problems.append(msg.text) if msg.type == "error" else None)
     tab.goto(url, wait_until="networkidle")
+    return tab, problems
+
+
+@pytest.fixture
+def page(browser):
+    engine, url = browser
+    tab, problems = open_tab(engine, url)
+    yield tab, problems
+    tab.close()
+
+
+@pytest.fixture
+def phone(browser):
+    """A real phone viewport - a Pixel-ish 412x915.
+
+    The redesign shipped once having only ever been looked at wide, and
+    on a phone it rendered half the old layout and half the new one at
+    the same time. Nothing in the markup said so; only the geometry did.
+    """
+    engine, url = browser
+    tab, problems = open_tab(engine, url, viewport={"width": 412, "height": 915})
     yield tab, problems
     tab.close()
 
@@ -141,20 +160,12 @@ class TestThePageRuns:
         tab, _ = page
         assert "{{" not in tab.locator("body").inner_text()
 
-    def test_settings_opens_and_renders_its_fields(self, page):
+    def test_the_queue_is_a_destination_not_a_sheet(self, page):
         tab, _ = page
-        tab.click("button[aria-label='Settings']")
-        panel = tab.locator(".overlay").first
-        panel.wait_for(state="visible", timeout=5000)
-        text = panel.inner_text()
-        # A handful of the fields that must survive the settings split.
-        for label in ("Output format", "Primary lyrics source", "Layout"):
-            assert label in text, "%s is missing from Settings" % label
-
-    def test_the_queue_can_be_opened(self, page):
-        tab, _ = page
-        tab.click(".queuebar")
+        tab.click(".sidebar .navitem:has-text('Queue')")
         tab.locator(".queuepanel").first.wait_for(state="visible", timeout=5000)
+        # Nothing floats: the old fixed bar and sheet are gone entirely.
+        assert tab.locator(".queuebar").count() == 0
 
 
 class TestTheWorkbenchShell:
@@ -200,20 +211,114 @@ class TestTheWorkbenchShell:
     def test_settings_keeps_every_field(self, page):
         tab, _ = page
         self.nav(tab, "Settings")
-        text = tab.locator(".overlay").first.inner_text()
+        panel = tab.locator(".settingspage")
+        panel.wait_for(state="visible", timeout=5000)
+        # Settings is a page now, so the fields have to be found there and
+        # not in an overlay - and every one of them has to have survived
+        # the move. Disclosures are read too: the copy is folded away, not
+        # deleted, and `inner_text` on a closed <details> would miss it.
+        text = tab.evaluate(
+            "() => document.querySelector('.settingspage').textContent")
         for label in ("Output format", "Primary lyrics source", "Layout",
-                      "Apple Music token", "Max video quality"):
+                      "Apple Music token", "Max video quality",
+                      "Music library path", "Concurrent downloads",
+                      "Cookies", "Password", "Update yt-dlp"):
             assert label in text, "%s went missing in the redesign" % label
+
+    def test_settings_no_longer_floats_over_the_page(self, page):
+        # It used to be one very long sheet over whatever you were doing.
+        # The only overlay left is the password prompt, which is not shown.
+        tab, _ = page
+        self.nav(tab, "Settings")
+        assert tab.locator(".overlay").count() == 0
 
     def test_the_queue_rail_is_present_on_search(self, page):
         tab, _ = page
         assert tab.locator(".queuerail").is_visible()
+
+    def test_the_rail_gives_way_where_the_page_wants_the_width(self, page):
+        tab, _ = page
+        for label in ("Stats", "Settings", "Queue"):
+            self.nav(tab, label)
+            assert not tab.locator(".queuerail").is_visible(), label
 
     def test_no_template_expression_leaks_on_any_screen(self, page):
         tab, _ = page
         for label in ("Library", "Stats", "Repair", "Queue", "Search"):
             self.nav(tab, label)
             assert "{{" not in tab.locator(".workarea").inner_text(), label
+
+
+class TestThePhoneShell:
+    """What the phone actually shows, in pixels.
+
+    Every assertion here is a defect a person reported from a real
+    handset: the tab bar rendering at the top of the page, the search
+    field pinned near the bottom, and the old brand bar and queue footer
+    still drawn underneath the new shell.
+    """
+
+    def box(self, tab, selector):
+        found = tab.locator(selector).first.bounding_box()
+        assert found, "%s is not laid out" % selector
+        return found
+
+    def test_the_desktop_chrome_is_not_rendered(self, phone):
+        tab, _ = phone
+        assert not tab.locator(".sidebar").is_visible()
+        assert not tab.locator(".queuerail").is_visible()
+
+    def test_the_old_layout_is_gone_from_the_document(self, phone):
+        # Not merely hidden: removed. Two layouts in one document is what
+        # produced a page that was neither.
+        tab, _ = phone
+        for stale in (".topbar", ".queuebar", ".searchbar"):
+            assert tab.locator(stale).count() == 0, "%s survived" % stale
+
+    def test_the_tab_bar_is_pinned_to_the_bottom(self, phone):
+        tab, _ = phone
+        bar = self.box(tab, ".tabbar")
+        height = tab.evaluate("() => window.innerHeight")
+        assert bar["y"] > height * 0.8, "the tab bar is not at the bottom"
+        assert bar["y"] + bar["height"] <= height + 1
+
+    def test_the_search_field_is_at_the_top_under_the_title(self, phone):
+        tab, _ = phone
+        title = self.box(tab, ".workhead .pagetitle")
+        field = self.box(tab, ".workhead .searchrow input")
+        assert field["y"] > title["y"], "the search field is above the title"
+        assert field["y"] < 200, "the search field is not in the header"
+
+    def test_the_page_does_not_scroll_sideways(self, phone):
+        tab, _ = phone
+        overflow = tab.evaluate(
+            "() => document.documentElement.scrollWidth - window.innerWidth")
+        assert overflow <= 0, "the page is %dpx too wide" % overflow
+
+    def test_nothing_is_hidden_under_the_dock(self, phone):
+        # The last row of a list used to sit underneath the fixed bar,
+        # unreachable, because the padding that cleared it was a guess.
+        tab, _ = phone
+        tab.click(".tabbar button:has-text('Library')")
+        tab.locator(".hint:has-text('Nothing here yet')").wait_for(timeout=5000)
+        dock = self.box(tab, ".phonedock")
+        measured = tab.evaluate(
+            "() => getComputedStyle(document.querySelector('.workbody'))"
+            ".paddingBottom")
+        assert float(measured.rstrip("px")) >= dock["height"]
+
+    def test_every_tab_reaches_its_screen(self, phone):
+        tab, _ = phone
+        for label in ("Queue", "Library", "Stats", "Settings", "Search"):
+            tab.click(".tabbar button:has-text('%s')" % label)
+            heading = tab.locator(".workhead .pagetitle").inner_text()
+            assert heading.strip() == label
+
+    def test_tap_targets_are_big_enough(self, phone):
+        tab, _ = phone
+        heights = tab.eval_on_selector_all(
+            ".tabbar button", "els => els.map(el => el.getBoundingClientRect().height)")
+        assert heights and min(heights) >= 44, heights
 
 
 class TestTheJudgementLine:
