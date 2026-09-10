@@ -60,3 +60,30 @@ class TestShell:
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/manifest.webmanifest").status_code == 200
         assert client.get("/api/jobs").status_code == 401
+
+
+class TestTheServiceWorkerCacheName:
+    """The cache name is the version. install re-seeds under the new key
+    and activate deletes every other one, so bumping it is what actually
+    purges the previous shell - without a bump the old files sit there
+    until a successful online load happens to overwrite them."""
+
+    def _sw(self):
+        from pathlib import Path
+        return (Path(__file__).parent.parent / "beetdrop" / "static"
+                / "sw.js").read_text()
+
+    def test_activate_deletes_every_other_cache(self):
+        source = self._sw()
+        assert "keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))" in source
+
+    def test_install_reseeds_bypassing_the_http_cache(self):
+        # Without cache: "reload" a new shell cache can be seeded with the
+        # very copies it exists to replace.
+        assert 'cache: "reload"' in self._sw()
+
+    def test_the_shell_list_covers_what_the_page_needs(self):
+        source = self._sw()
+        for asset in ("/static/app.js", "/static/style.css",
+                      "/static/vue.global.prod.js", "/"):
+            assert '"%s"' % asset in source, asset
