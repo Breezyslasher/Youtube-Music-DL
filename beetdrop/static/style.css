@@ -4,20 +4,44 @@
    is the same page in a max-width container with the search bar at the
    top. The class is set by the layout setting (auto follows screen size). */
 
+/* Redesign "Workbench": a low-contrast near-black with one desaturated
+   sage accent. Amber means "needs a human decision" and nothing else -
+   it is never decoration. */
 :root {
-  --bg: #11151b;
-  --panel: #1a2029;
-  --panel-2: #222a35;
-  --text: #e8edf2;
-  --muted: #8b98a5;
-  --accent: #4da3ff;
-  --accent-press: #3186e4;
-  --danger: #e5534b;
-  --warn: #e3b341;
-  --ok: #4ac26b;
-  --border: #2c3642;
+  --bg:          #0d0f11;  /* app background */
+  --bg-sunken:   #0b0d0f;  /* queue rail, tab bar */
+  --panel:       #14171a;  /* cards, list rows */
+  --panel-2:     #1b1f23;  /* active nav item */
+  --panel-3:     #22272c;  /* segmented active, progress track */
+  --field:       #171a1e;  /* inputs */
+  --border:      #262b30;  /* control borders */
+  --border-soft: #1e2327;  /* card borders */
+  --line:        #1c2126;  /* structural dividers */
+  --line-faint:  #14181b;  /* table row dividers */
+  --text:        #e2e5e7;
+  --muted:       #9aa2a8;
+  --muted-2:     #8a9299;
+  --dim:         #6f777d;  /* labels and timestamps only, never body copy */
+  --accent:      #8fbfae;
+  --accent-dim:  #4f6b60;
+  --accent-bg:   #1b2b25;
+  --accent-line: #2c4a3e;
+  --warn:        #c9a06a;
+  --warn-line:   #3a3026;
+  --warn-bg:     #2a221a;
+  --ok:          #7fb08f;
+  --on-accent:   #0d0f11;
+  --danger:      #c9736a;
+  --accent-press: #7aa998;
+
   --radius: 10px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+  --radius-pill: 20px;
   --tap: 44px;
+
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -445,3 +469,403 @@ textarea { padding: 10px 12px; resize: vertical; font-size: 13px; }
   border-radius: 4px;
 }
 .lyriccard .thumb { align-self: flex-start; }
+
+/* ── Workbench shell ──────────────────────────────────────────────────
+   Sidebar + header + content + queue rail on desktop; the sidebar
+   becomes a bottom tab bar and the rail a one-line strip on phone. One
+   breakpoint: content columns use minmax(0,1fr) and wrap on their own. */
+
+.workbench {
+  display: grid;
+  grid-template-columns: 214px minmax(0, 1fr) auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px 12px;
+  border-right: 1px solid var(--line);
+}
+.sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.sidebar .brand .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.navgroup { display: flex; flex-direction: column; gap: 2px; }
+.navlabel {
+  font: 400 10px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--dim);
+  padding: 0 10px 4px;
+}
+.navitem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  min-height: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.navitem:hover { color: var(--text); }
+.navitem.active { background: var(--panel-2); color: var(--text); font-weight: 500; }
+.navitem .navtext { flex: 1; min-width: 0; }
+.navitem .badge {
+  font: 400 12px/1 var(--mono);
+  color: var(--dim);
+}
+.navitem .badge.good { color: var(--accent); }
+.navitem .badge.warn { color: var(--warn); }
+.sidebar .about {
+  margin-top: auto;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.workarea { display: flex; flex-direction: column; min-width: 0; }
+.workhead {
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.workhead .pagetitle { font-size: 18px; font-weight: 600; margin: 0; }
+.workhead .titlerow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.workhead .titlerow .grow { flex: 1; min-width: 0; }
+.workbody { padding: 18px 20px 24px; min-width: 0; }
+
+.queuerail {
+  width: 312px;
+  background: var(--bg-sunken);
+  border-left: 1px solid var(--line);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+.railhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.railhead .label {
+  font: 400 10px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--dim);
+}
+.railhead .count { font-size: 12px; color: var(--muted-2); }
+
+/* Segmented control for the search modes. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.segmented button {
+  min-height: 0;
+  padding: 6px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+.segmented button.active { background: var(--panel-3); color: var(--text); }
+
+/* Judgement line on a result: the point of the redesign. */
+.verdict { font-size: 12px; color: var(--dim); }
+.verdict.warn { color: var(--warn); }
+.card.known { opacity: .62; }
+.card.known:hover, .card.picked { opacity: 1; }
+.card.picked { border-color: var(--accent); }
+.card .duration.warn { color: var(--warn); }
+
+/* Filter chips on Library. */
+.chiprow { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  padding: 6px 12px;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.chip.active {
+  background: var(--accent-bg);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+.chip.warnchip { border-color: var(--warn-line); color: var(--warn); }
+
+/* Library list. */
+.libhead, .librow {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 64px 74px 60px 72px;
+  align-items: center;
+  gap: 12px;
+}
+.libhead {
+  padding: 0 4px 8px;
+  font: 400 10px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--dim);
+}
+.librow {
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--line-faint);
+  cursor: pointer;
+}
+.librow:hover { background: var(--panel); }
+.librow .art {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-xs);
+  background: repeating-linear-gradient(135deg, #191d21 0 6px, #14181b 6px 12px);
+}
+.librow .art.review {
+  background: repeating-linear-gradient(135deg, #2a221a 0 6px, #1d1812 6px 12px);
+}
+.librow .name { font-size: 14px; font-weight: 600; }
+.librow .sub { font-size: 12px; color: var(--muted-2); }
+.librow .num { font: 600 13px/1 var(--mono); color: var(--muted); }
+.librow .num.warn { color: var(--warn); }
+.librow .mono { font: 400 12px/1 var(--mono); color: var(--dim); }
+.librow .title-review { color: var(--warn); }
+.pill {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--radius-pill);
+  font: 400 10px/1.5 var(--mono);
+  color: var(--warn);
+}
+.lyricdot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.lyricdot.word { background: var(--accent); }
+.lyricdot.line { background: var(--accent-dim); }
+.lyricdot.none { background: var(--panel-3); }
+.lyricdot.junk { background: var(--warn); }
+
+.albumactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 4px 14px 56px;
+  border-bottom: 1px solid var(--line-faint);
+}
+.tracklist { padding: 0 4px 14px 56px; }
+.tracklist .trackrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.tracklist .trackno { font: 400 12px/1 var(--mono); color: var(--dim); width: 22px; }
+
+/* Stats. */
+.statstrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.statcard {
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.statcard .label {
+  font: 400 10px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--dim);
+}
+.statcard .value { font: 600 24px/1.1 var(--mono); }
+.statcard .value.good { color: var(--accent); }
+.statcard .sub { font-size: 12px; color: var(--muted-2); }
+.statcard .sub.warn { color: var(--warn); }
+
+.stackbar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--panel-3);
+}
+.stackbar span { display: block; height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted-2); }
+.legend .swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 6px;
+}
+.barlist { display: flex; flex-direction: column; gap: 8px; }
+.barlist .barrow { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.barlist .bartrack {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+.barlist .barfill { height: 100%; background: var(--accent); }
+.barlist .barnum { font: 400 12px/1 var(--mono); color: var(--muted); min-width: 56px; text-align: right; }
+
+.activity {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 104px;
+}
+.activity .day {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1px;
+  min-width: 0;
+}
+.activity .seg { border-radius: 2px 2px 0 0; }
+.activity .seg.audio { background: var(--accent); }
+.activity .seg.video { background: var(--accent-dim); }
+.activity .seg.failed { background: var(--warn); border-radius: 0 0 2px 2px; }
+
+.axis {
+  display: flex;
+  justify-content: space-between;
+  font: 400 11px/1.4 var(--mono);
+  color: var(--dim);
+  margin-top: 6px;
+}
+
+/* Disclosures: existing copy kept verbatim, just folded away. */
+.explain > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--dim);
+  list-style: none;
+  padding: 4px 0;
+}
+.explain > summary::-webkit-details-marker { display: none; }
+.explain > summary::after { content: " ⌄"; }
+.explain[open] > summary::after { content: " ⌃"; }
+.explain .note { font-size: 13px; color: var(--muted); }
+
+/* Bottom tab bar (phone). */
+.tabbar { display: none; }
+
+@media (max-width: 900px) {
+  .workbench { grid-template-columns: minmax(0, 1fr); }
+  .sidebar { display: none; }
+  .queuerail {
+    display: none;
+  }
+  .workbody { padding: 14px 14px 20px; }
+  .workhead { padding: 12px 14px 10px; }
+  .libhead { display: none; }
+  .librow {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas: "art name num";
+  }
+  .librow .art { grid-area: art; }
+  .librow .col-name { grid-area: name; }
+  .librow .num { grid-area: num; }
+  .librow .col-lyrics, .librow .col-format, .librow .col-added { display: none; }
+  .albumactions, .tracklist { padding-left: 4px; }
+
+  .tabbar {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    gap: 4px;
+    padding: 8px 8px 16px;
+    background: var(--bg-sunken);
+    border-top: 1px solid var(--line);
+  }
+  .tabbar button {
+    flex: 1;
+    min-height: 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    border-radius: var(--radius-sm);
+  }
+  .tabbar button.active {
+    background: var(--panel-2);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .queuestrip {
+    margin: 0 14px 10px;
+    padding: 11px 13px;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .queuestrip .row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .queuestrip .row .grow { flex: 1; min-width: 0; }
+  .queuestrip .link { color: var(--accent); font-size: 12px; }
+}
+@media (min-width: 901px) {
+  .queuestrip { display: none; }
+}

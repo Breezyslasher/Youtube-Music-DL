@@ -1212,6 +1212,96 @@ class TestSearchingForAMissingTrackByHand:
         assert "/api/lyrics/search?q=" in source
 
 
+class TestTheLibraryAndStatsEndpoints:
+    """Library and Stats are walks of the tree, not a cached index: at a
+    real library size the walk plus a read of every sidecar is under a
+    second, and a second copy of the truth is a thing that can be wrong."""
+
+    def _library(self, tmp_path):
+        root = tmp_path / "music"
+        album = root / "Dolly Parton" / "9 to 5 and Odd Jobs (1980)"
+        album.mkdir(parents=True)
+        for n in (1, 2, 4):        # a gap at 3
+            (album / ("%02d - Track.opus" % n)).write_bytes(b"x")
+        (album / "01 - Track.lrc").write_text("[00:01.00]<00:01.00>word")
+        (album / "02 - Track.lrc").write_text("[00:01.00]line only")
+        review = root / "_review" / "Unknown - Some Song"
+        review.mkdir(parents=True)
+        (review / "track.opus").write_bytes(b"x")
+        return Config(music_root=root, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def test_albums_carry_what_the_screen_shows(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            body = client.get("/api/library?sort=az").json()
+        assert body["total"] == 2
+        album = [a for a in body["items"] if a["artist"] == "Dolly Parton"][0]
+        assert album["track_count"] == 3
+        # From the numbering, not MusicBrainz: 04 exists, 03 does not.
+        assert album["expected_count"] == 4 and album["incomplete"] is True
+        assert album["lyrics"] == {"word": 1, "line": 1, "junk": 0, "none": 1}
+        assert album["format"] == "opus" and album["verified"] is True
+
+    def test_a_review_grab_is_its_own_unverified_album(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            body = client.get("/api/library?filter=unverified").json()
+        assert body["total"] == 1
+        assert body["items"][0]["verified"] is False
+        assert body["items"][0]["artist"] == "Unknown"
+
+    @pytest.mark.parametrize("name,expected", [
+        ("missing_lyrics", 2), ("line_only", 1), ("unverified", 1),
+        ("incomplete", 1), ("junk", 0),
+    ])
+    def test_each_chip_counts_what_it_filters(self, tmp_path, name, expected):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            counts = client.get("/api/library/counts").json()["counts"]
+            listed = client.get("/api/library?filter=%s" % name).json()["total"]
+        assert counts[name] == expected, name
+        assert listed == expected, "%s lists a different number than it counts" % name
+
+    def test_an_album_lists_its_tracks_with_per_track_lyrics(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            found = client.get("/api/library?filter=incomplete").json()["items"][0]
+            tracks = client.get("/api/library/album/%s" % found["id"]).json()["tracks"]
+        assert [t["number"] for t in tracks] == [1, 2, 4]
+        assert [t["lyrics"] for t in tracks] == ["word", "line", "none"]
+
+    def test_an_id_pointing_outside_the_library_is_refused(self, tmp_path):
+        # The id is a reversible encoding of a path, so it has to be held
+        # to the library like every other path arriving over HTTP.
+        import base64
+        config = self._library(tmp_path)
+        escape = base64.urlsafe_b64encode(b"../../etc").decode().rstrip("=")
+        with TestClient(create_app(config)) as client:
+            assert client.get("/api/library/album/%s" % escape).status_code == 404
+
+    def test_stats_totals_the_same_library(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            stats = client.get("/api/stats").json()
+        assert stats["tracks"] == 4 and stats["albums"] == 2
+        assert stats["incomplete_albums"] == 1
+        assert stats["review_count"] == 1
+        assert stats["lyrics"] == {"word": 1, "line": 1, "junk": 0,
+                                   "none": 2, "bad_timing": 0}
+        assert 74 < stats["verified_pct"] < 76      # 3 of 4 verified
+
+    def test_stats_says_when_the_job_history_is_short(self, tmp_path):
+        # A chart that quietly loses its early days reads as a drop in
+        # activity that did not happen.
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            reliability = client.get("/api/stats").json()["reliability"]
+        assert reliability["history_days"] == 14
+        assert len(reliability["activity"]) == 14
+        assert reliability["history_capped"] is False   # no grabs at all
+
+
 class TestWordCoverageEstimate:
     """Answering "is an upgrade pass worth running?" by running it costs
     two Apple calls per track and hours of waiting. A random sample

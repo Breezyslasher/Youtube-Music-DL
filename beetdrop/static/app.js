@@ -7,7 +7,7 @@ const { createApp } = Vue;
 const LS_LAYOUT = "beetdrop.layout";
 const MOBILE_QUERY = "(max-width: 700px)";
 
-createApp({
+const app = createApp({
   data() {
     return {
       query: "",
@@ -36,6 +36,23 @@ createApp({
       loadingUnverified: false,
       fixingMatch: "",
       libraryQuery: "",
+
+      // Workbench shell: one ref is the whole router. The views are
+      // search / queue / library / stats / repair / settings.
+      view: "search",
+      libraryItems: [],
+      libraryTotal: 0,
+      libraryCounts: {},
+      libraryFormats: {},
+      libraryFilter: "",
+      libraryFilterText: "",
+      librarySort: "added",
+      loadingLibrary: false,
+      selectedAlbum: null,
+      albumTracks: [],
+      stats: null,
+      loadingStats: false,
+      notifyOnDone: localStorage.getItem("beetdrop.notify") === "1",
       testingApple: false,
       appleStatus: "",
       appleOk: false,
@@ -69,6 +86,41 @@ createApp({
   },
 
   computed: {
+    navItems() {
+      return [
+        { view: "search", label: "Search" },
+        { view: "queue", label: "Queue" },
+        { view: "library", label: "Library" },
+        { view: "stats", label: "Stats" },
+        { view: "repair", label: "Repair" },
+        { view: "settings", label: "Settings" },
+      ];
+    },
+    tabItems() {
+      return [
+        { view: "search", label: "Search" },
+        { view: "queue", label: "Queue" },
+        { view: "library", label: "Library" },
+        { view: "stats", label: "Stats" },
+        { view: "settings", label: "Settings" },
+      ];
+    },
+    libraryChips() {
+      const counts = this.libraryCounts;
+      const chips = [
+        { key: "", label: "All", count: counts.all != null ? counts.all : null },
+        { key: "missing_lyrics", label: "Missing lyrics", count: counts.missing_lyrics },
+        { key: "line_only", label: "Line-level only", count: counts.line_only },
+        { key: "unverified", label: "Unverified", count: counts.unverified, warn: true },
+        { key: "incomplete", label: "Gaps in numbering", count: counts.incomplete, warn: true },
+        { key: "junk", label: "Junk lyrics", count: counts.junk },
+      ];
+      Object.keys(this.libraryFormats || {}).forEach((ext) => {
+        chips.push({ key: "format:" + ext, label: ext, count: this.libraryFormats[ext] });
+      });
+      return chips.filter((chip) => chip.count == null || chip.count > 0
+                                    || chip.key === "" || chip.key === this.libraryFilter);
+    },
     layoutClass() {
       const mode = this.layout === "auto"
         ? (this.mediaMobile ? "mobile" : "desktop")
@@ -119,6 +171,192 @@ createApp({
       this.toast = message;
       clearTimeout(this.toastTimer);
       this.toastTimer = setTimeout(() => { this.toast = ""; }, 4000);
+    },
+
+    goTo(view) {
+      this.view = view;
+      this.settingsOpen = view === "settings";
+      if (view === "library" && !this.libraryItems.length) this.loadLibrary();
+      if (view === "stats" && !this.stats) this.loadStats();
+      if (view === "repair" && !this.unverified.length) this.loadUnverified();
+    },
+
+    navBadge(view) {
+      if (view === "queue") return this.activeJobs.length || "";
+      if (view === "repair") return this.unverifiedTotal || "";
+      if (view === "stats" && this.stats) {
+        const l = this.stats.lyrics;
+        const total = l.word + l.line + l.junk + l.none;
+        return total ? Math.round(100 * (l.word + l.line) / total) + "%" : "";
+      }
+      return "";
+    },
+
+    navBadgeTone(view) {
+      if (view === "queue") return "good";
+      if (view === "repair") return "warn";
+      return "";
+    },
+
+    fmtBytes(bytes) {
+      if (!bytes) return "0 B";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let value = bytes;
+      let unit = 0;
+      while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+      return (value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1))
+        + " " + units[unit];
+    },
+
+    fmtWhen(seconds) {
+      if (!seconds) return "-";
+      const ago = Date.now() / 1000 - seconds;
+      if (ago < 90) return "just now";
+      if (ago < 5400) return Math.round(ago / 60) + "m ago";
+      if (ago < 172800) return Math.round(ago / 3600) + "h ago";
+      return Math.round(ago / 86400) + "d ago";
+    },
+
+    async loadLibrary() {
+      this.loadingLibrary = true;
+      this.selectedAlbum = null;
+      try {
+        const query = "?filter=" + encodeURIComponent(this.libraryFilter)
+          + "&sort=" + encodeURIComponent(this.librarySort)
+          + "&q=" + encodeURIComponent(this.libraryFilterText);
+        const body = await this.api("/api/library" + query);
+        this.libraryItems = body.items || [];
+        this.libraryTotal = body.total || 0;
+        const counts = await this.api("/api/library/counts");
+        this.libraryCounts = counts.counts || {};
+        this.libraryFormats = counts.formats || {};
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not read the library: " + err.message);
+        }
+      } finally {
+        this.loadingLibrary = false;
+      }
+    },
+
+    albumLyricState(album) {
+      const l = album.lyrics || {};
+      if (l.none && !l.word && !l.line) return "none";
+      if (l.word && !l.line && !l.none) return "word";
+      if (l.junk) return "junk";
+      return l.word ? "word" : (l.line ? "line" : "none");
+    },
+
+    async selectAlbum(album) {
+      if (this.selectedAlbum && this.selectedAlbum.id === album.id) {
+        this.selectedAlbum = null;
+        this.albumTracks = [];
+        return;
+      }
+      this.selectedAlbum = album;
+      this.albumTracks = [];
+      try {
+        const body = await this.api("/api/library/album/" + encodeURIComponent(album.id));
+        this.albumTracks = body.tracks || [];
+      } catch (err) {
+        if (err.message !== "password required") this.showToast(err.message);
+      }
+    },
+
+    fixFromAlbum(album) {
+      // Straight into the repair flow with the album already searched
+      // for, rather than making a person retype what they just clicked.
+      this.libraryQuery = album.album;
+      this.goTo("repair");
+      this.searchLibrary();
+    },
+
+    async copyPath(path) {
+      try {
+        await navigator.clipboard.writeText(path);
+        this.showToast("Path copied");
+      } catch (err) {
+        this.showToast(path);
+      }
+    },
+
+    async loadStats() {
+      this.loadingStats = true;
+      try {
+        this.stats = await this.api("/api/stats");
+      } catch (err) {
+        if (err.message !== "password required") {
+          this.showToast("Could not read stats: " + err.message);
+        }
+      } finally {
+        this.loadingStats = false;
+      }
+    },
+
+    lyricShare(kind) {
+      if (!this.stats) return 0;
+      const l = this.stats.lyrics;
+      const total = l.word + l.line + l.junk + l.none;
+      return total ? (100 * l[kind] / total) : 0;
+    },
+
+    formatShare(row) {
+      if (!this.stats || !this.stats.tracks) return 0;
+      return 100 * row.count / this.stats.tracks;
+    },
+
+    activityHeight(count) {
+      if (!count) return 0;
+      const peak = Math.max(1, ...this.stats.reliability.activity.map(
+        (d) => d.audio + d.video + d.failed));
+      return Math.max(2, Math.round(96 * count / peak));
+    },
+
+    verdictFor(result) {
+      // The third line on a result row, and the point of the redesign:
+      // say what is questionable *before* the grab rather than after it
+      // has been filed. Nothing is invented - when there is nothing to
+      // say the line is omitted rather than padded with filler.
+      const title = (result.raw_title || result.title || "").toLowerCase();
+      const qualifier = /\b(live|remix|extended|sped ?up|slowed|cover|karaoke|instrumental)\b/;
+      if (qualifier.test(title)) {
+        return { text: "Live or remix qualifier - likely filed to _review",
+                 warn: false };
+      }
+      const seconds = result.duration_seconds;
+      if (seconds && seconds > 15 * 60) {
+        return { text: "Over 15 minutes - probably a mix, not a single track",
+                 warn: true };
+      }
+      if (seconds && seconds < 45) {
+        return { text: "Under 45 seconds - probably a clip", warn: true };
+      }
+      return null;
+    },
+
+    async requestNotifications() {
+      if (!("Notification" in window)) {
+        this.showToast("This browser has no notifications");
+        return;
+      }
+      const granted = await Notification.requestPermission();
+      this.notifyOnDone = granted === "granted";
+      localStorage.setItem("beetdrop.notify", this.notifyOnDone ? "1" : "0");
+      if (!this.notifyOnDone) this.showToast("Notifications not permitted");
+    },
+
+    notifyFiled(job) {
+      // Fired from the job stream when a grab finishes. Falls back to the
+      // usual toast when permission was never granted, so the outcome is
+      // never only in a notification the browser refused to show.
+      const where = job.inbox_path || "your library";
+      if (!this.notifyOnDone || !("Notification" in window)
+          || Notification.permission !== "granted") {
+        return;
+      }
+      try {
+        new Notification(job.title || "Grab finished", { body: "Filed to " + where });
+      } catch (err) { /* some browsers refuse outside a service worker */ }
     },
 
     hideImage(event) {
@@ -252,6 +490,7 @@ createApp({
         this.jobs[index] = job;
         if (previous.stage !== "done" && job.stage === "done") {
           this.showToast("Filed: " + (job.title || job.video_id));
+          this.notifyFiled(job);
         }
         if (previous.inbox_state !== "unverified" && job.inbox_state === "unverified") {
           this.showToast("No MusicBrainz match - in _review: " + (job.title || job.video_id));
@@ -297,6 +536,9 @@ createApp({
     },
 
     async openSettings() {
+      // Settings is a destination in the shell now, not a sheet floated
+      // over whatever was underneath it.
+      this.view = "settings";
       try {
         this.settings = await this.api("/api/settings");
         this.draft = {
@@ -810,3 +1052,10 @@ createApp({
     }
   },
 }).mount("#app");
+
+// A handle on the running app. Useful from the browser console on a
+// self-hosted box - "why did that row not flag?" is answerable with
+// beetdrop.verdictFor({...}) - and it is what the page tests drive,
+// rather than reaching into Vue's internals, which the production build
+// does not promise to keep.
+window.beetdrop = app;

@@ -705,6 +705,98 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             content=lrc, media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="%s"' % safe})
 
+    @app.get("/api/library", dependencies=[protected])
+    async def api_library(view: str = "albums", filter: str = "",
+                          sort: str = "added", q: str = "",
+                          page: int = 1, per_page: int = 60):
+        """What is on disk, as albums.
+
+        Walked on demand rather than cached: at a real library size the
+        walk plus a read of every sidecar is well under a second, and a
+        second copy of the truth is a thing that can be wrong.
+        """
+        from .libraryview import matches_filter, scan_albums, sort_albums
+
+        config = effective_config()
+
+        def collect():
+            albums = scan_albums(config.music_root)
+            if view == "review":
+                albums = [a for a in albums if not a.verified]
+            needle = q.strip().lower()
+            if needle:
+                albums = [a for a in albums
+                          if needle in ("%s %s" % (a.artist, a.album)).lower()]
+            albums = [a for a in albums if matches_filter(a, filter)]
+            albums = sort_albums(albums, sort)
+            size = max(1, min(per_page, 200))
+            start = max(0, (max(1, page) - 1) * size)
+            window = albums[start:start + size]
+            return len(albums), [dict(vars(a), incomplete=a.incomplete)
+                                 for a in window]
+
+        total, items = await asyncio.to_thread(collect)
+        return {"total": total, "page": page, "items": items}
+
+    @app.get("/api/library/counts", dependencies=[protected])
+    async def api_library_counts():
+        """How many albums each filter chip would show.
+
+        The chips are the maintenance lists that used to live inside
+        Settings; a chip with no count is a chip nobody presses.
+        """
+        from .libraryview import FILTERS, matches_filter, scan_albums
+
+        config = effective_config()
+
+        def collect():
+            albums = scan_albums(config.music_root)
+            counts = {name: sum(1 for a in albums if matches_filter(a, name))
+                      for name in FILTERS}
+            counts["all"] = len(albums)
+            formats = {}
+            for album in albums:
+                formats[album.format] = formats.get(album.format, 0) + 1
+            return counts, formats
+
+        counts, formats = await asyncio.to_thread(collect)
+        return {"counts": counts, "formats": formats}
+
+    @app.get("/api/library/album/{ident}", dependencies=[protected])
+    async def api_library_album(ident: str):
+        """One album's tracks, each with its own lyrics state."""
+        from .libraryview import album_path, album_tracks
+
+        config = effective_config()
+        folder = album_path(config.music_root, ident)
+        if folder is None or not folder.is_dir():
+            raise HTTPException(status_code=404, detail="no such album")
+        tracks = await asyncio.to_thread(album_tracks, folder)
+        return {"path": str(folder), "tracks": tracks}
+
+    @app.get("/api/stats", dependencies=[protected])
+    async def api_stats():
+        """Library health, in one read of the tree plus the jobs table."""
+        from .libraryview import (bad_timing_count, count_videos, grab_history,
+                                  scan_albums, summarise)
+
+        config = effective_config()
+
+        def collect():
+            albums = scan_albums(config.music_root)
+            totals = summarise(albums)
+            totals["videos"] = count_videos(config.video_root)
+            totals["bytes_free"] = int(storage_free_mb(config.music_root) or 0) * 1024 * 1024
+            totals["lyrics"]["bad_timing"] = bad_timing_count(config.music_root)
+            # No by-source breakdown: nothing records which provider wrote
+            # a sidecar, and guessing it from the file would be a guess.
+            totals["reliability"] = grab_history(store.list_jobs(limit=1000))
+            return totals
+
+        stats = await asyncio.to_thread(collect)
+        stats["scanned_at"] = time.time()
+        return stats
+
     @app.get("/api/match/unverified", dependencies=[protected])
     async def api_match_unverified(limit: int = 100):
         """Grabs filed under _review/ - the ones nothing could verify.

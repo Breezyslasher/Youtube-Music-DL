@@ -155,3 +155,90 @@ class TestThePageRuns:
         tab, _ = page
         tab.click(".queuebar")
         tab.locator(".queuepanel").first.wait_for(state="visible", timeout=5000)
+
+
+class TestTheWorkbenchShell:
+    """The redesign's shell: one `view` ref is the whole router, so a
+    screen that fails to render is a screen nobody can reach."""
+
+    def nav(self, tab, label):
+        tab.click(".sidebar .navitem:has-text('%s')" % label)
+
+    def test_every_nav_destination_exists(self, page):
+        tab, _ = page
+        labels = [text.strip() for text in
+                  tab.locator(".sidebar .navitem .navtext").all_inner_texts()]
+        assert labels == ["Search", "Queue", "Library", "Stats",
+                          "Repair", "Settings"]
+
+    def test_library_opens_and_reads_the_library(self, page):
+        tab, problems = page
+        self.nav(tab, "Library")
+        tab.locator("h2:has-text('Library')").first.wait_for(state="visible",
+                                                             timeout=5000)
+        # An empty library must say what to do rather than render a
+        # padded panel of nothing.
+        tab.locator(".hint:has-text('Nothing here yet')").wait_for(timeout=5000)
+        assert not problems, problems[:3]
+
+    def test_stats_opens_and_renders_its_numbers(self, page):
+        tab, problems = page
+        self.nav(tab, "Stats")
+        tab.locator(".statstrip").wait_for(state="visible", timeout=8000)
+        # The labels are uppercased in CSS, so compare case-insensitively
+        # rather than asserting the styling.
+        text = tab.locator(".statstrip").inner_text().lower()
+        for label in ("tracks", "albums", "artists", "on disk", "verified"):
+            assert label in text
+        assert not problems, problems[:3]
+
+    def test_repair_is_reachable_from_the_sidebar(self, page):
+        tab, _ = page
+        self.nav(tab, "Repair")
+        tab.locator("h3:has-text('Wrong match')").first.wait_for(timeout=5000)
+
+    def test_settings_keeps_every_field(self, page):
+        tab, _ = page
+        self.nav(tab, "Settings")
+        text = tab.locator(".overlay").first.inner_text()
+        for label in ("Output format", "Primary lyrics source", "Layout",
+                      "Apple Music token", "Max video quality"):
+            assert label in text, "%s went missing in the redesign" % label
+
+    def test_the_queue_rail_is_present_on_search(self, page):
+        tab, _ = page
+        assert tab.locator(".queuerail").is_visible()
+
+    def test_no_template_expression_leaks_on_any_screen(self, page):
+        tab, _ = page
+        for label in ("Library", "Stats", "Repair", "Queue", "Search"):
+            self.nav(tab, label)
+            assert "{{" not in tab.locator(".workarea").inner_text(), label
+
+
+class TestTheJudgementLine:
+    """The third line on a result, and the reason the redesign exists:
+    say what is questionable before the grab, not after it has been
+    filed to _review."""
+
+    def verdict(self, tab, result):
+        return tab.evaluate("r => window.beetdrop.verdictFor(r)", result)
+
+    def test_a_live_take_is_called_out(self, page):
+        tab, _ = page
+        found = self.verdict(tab, {"raw_title": "Hello (Live at Wembley)",
+                                   "duration_seconds": 240})
+        assert found and "Live or remix" in found["text"]
+
+    def test_an_hour_long_mix_is_flagged(self, page):
+        tab, _ = page
+        found = self.verdict(tab, {"title": "Deep house set",
+                                   "duration_seconds": 3600})
+        assert found and found["warn"] is True
+
+    def test_an_ordinary_track_says_nothing(self, page):
+        # Padding every row with filler would make the line worth
+        # nothing on the rows that matter.
+        tab, _ = page
+        assert self.verdict(tab, {"title": "9 to 5",
+                                  "duration_seconds": 161}) is None
