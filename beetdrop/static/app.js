@@ -167,6 +167,8 @@ const app = createApp({
         { key: "unverified", label: "Unverified", count: counts.unverified, warn: true },
         { key: "incomplete", label: "Gaps in numbering", count: counts.incomplete, warn: true },
         { key: "junk", label: "Junk lyrics", count: counts.junk },
+        { key: "backwards", label: "Backwards word timing", count: counts.backwards, warn: true },
+        { key: "crowded", label: "Crowded word timing", count: counts.crowded, warn: true },
       ];
       Object.keys(this.libraryFormats || {}).forEach((ext) => {
         chips.push({ key: "format:" + ext, label: ext, count: this.libraryFormats[ext] });

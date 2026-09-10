@@ -224,3 +224,71 @@ class TestLyricsSetting:
         assert Config().lyrics_enabled is False
         monkeypatch.setenv("BEETDROP_LYRICS", "1")
         assert Config().lyrics_enabled is True
+
+
+class TestCrowdedWordTiming:
+    """Word tags packed too tight for anyone to sing.
+
+    What a forced aligner leaves on a line with more words than its
+    window can hold: the tail gets pinned at whatever minimum step the
+    writer enforces. It passes every other check - times increase, line
+    timing is real, words are right - so nothing found these, and a
+    highlighter given two words 10 ms apart shows one and skips the other.
+
+    The thresholds were set against real files: 5,000-odd word gaps from
+    a forced aligner and from Apple, where Apple's own good files score
+    zero and the aligner's crammed parenthetical lines score every time.
+    """
+
+    def line(self, *times):
+        tags = "".join("<00:%05.2f>w%d " % (t, i) for i, t in enumerate(times))
+        return "[00:%05.2f]%s" % (times[0], tags)
+
+    def test_a_collapsed_pair_is_caught(self):
+        # 10 ms apart: the same instant, whatever the file says.
+        assert lyrics_module.has_crowded_word_timing(
+            self.line(10.0, 10.01, 10.5)) is True
+
+    def test_several_tight_gaps_in_one_line_are_caught(self):
+        # 40 ms each. One could be a contraction; three is not singing.
+        assert lyrics_module.has_crowded_word_timing(
+            self.line(10.0, 10.04, 10.08, 10.12)) is True
+
+    def test_one_tight_gap_is_allowed(self):
+        # A fast contraction is real, and flagging it would make the
+        # count worth nothing on the files that matter.
+        assert lyrics_module.has_crowded_word_timing(
+            self.line(10.0, 10.04, 10.6, 11.2)) is False
+
+    def test_ordinary_singing_is_not_caught(self):
+        assert lyrics_module.has_crowded_word_timing(
+            self.line(10.0, 10.33, 10.61, 11.02)) is False
+
+    def test_backwards_timing_is_left_to_its_own_check(self):
+        # Counting it here too would make one bad file look like two
+        # problems, and the backwards check already reports it.
+        backwards = self.line(10.0, 9.0, 10.5)
+        assert lyrics_module.has_backwards_word_timing(backwards) is True
+        assert lyrics_module.has_crowded_word_timing(backwards) is False
+
+    def test_line_level_and_empty_files_are_not_flagged(self):
+        assert lyrics_module.has_crowded_word_timing(
+            "[00:10.00]Just a line\n[00:14.00]And another") is False
+        assert lyrics_module.has_crowded_word_timing("") is False
+        assert lyrics_module.has_crowded_word_timing(None) is False
+
+    def test_a_single_word_line_cannot_be_crowded(self):
+        assert lyrics_module.has_crowded_word_timing(
+            "[00:10.00]<00:10.00>Oooh") is False
+
+    def test_the_real_shape_of_the_defect(self):
+        """The line that prompted this, verbatim from a produced file."""
+        crammed = ("[02:21.70]<02:21.70>Don't <02:22.37>stop <02:22.97>(don't "
+                   "<02:23.31>stop, <02:23.51>stop <02:23.74>what <02:23.97>you're "
+                   "<02:24.39>doing) <02:25.15>doin' <02:25.16>what <02:25.18>you're "
+                   "<02:25.19>doin'")
+        assert lyrics_module.has_crowded_word_timing(crammed) is True
+        # And it looks perfectly healthy to everything else.
+        assert lyrics_module.has_word_timing(crammed) is True
+        assert lyrics_module.has_backwards_word_timing(crammed) is False
+        assert lyrics_module.looks_synthetic(crammed) is False

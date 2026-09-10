@@ -1213,6 +1213,69 @@ class TestSearchingForAMissingTrackByHand:
         assert "/api/lyrics/search?q=" in source
 
 
+class TestTimingFaultsReachTheScreens:
+    """Bad word timing has to be findable, not just detectable."""
+
+    CROWDED = ("[00:10.00]<00:10.00>a <00:10.01>b <00:10.60>c\n")
+    BACKWARDS = ("[00:10.00]<00:10.00>a <00:09.00>b <00:10.60>c\n")
+    FINE = ("[00:10.00]<00:10.00>a <00:10.40>b <00:10.90>c\n")
+
+    def _library(self, tmp_path):
+        root = tmp_path / "music"
+        album = root / "Artist" / "Album (2020)"
+        album.mkdir(parents=True)
+        for n, text in enumerate((self.FINE, self.CROWDED, self.BACKWARDS), 1):
+            (album / ("%02d - T.opus" % n)).write_bytes(b"x")
+            (album / ("%02d - T.lrc" % n)).write_text(text)
+        return Config(music_root=root, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def test_stats_counts_both_faults_apart(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            lyrics = client.get("/api/stats").json()["lyrics"]
+        # One of each, and the sound file in neither: a file that jumps
+        # backwards is not also reported as crowded.
+        assert lyrics["crowded"] == 1
+        assert lyrics["bad_timing"] == 1
+        assert lyrics["word"] == 3
+
+    def test_a_chip_filters_the_library_to_them(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            counts = client.get("/api/library/counts").json()["counts"]
+            found = client.get("/api/library?filter=crowded").json()
+        assert counts["crowded"] == 1 and counts["backwards"] == 1
+        assert found["total"] == 1
+
+    def test_a_track_row_names_what_is_wrong(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            ident = client.get("/api/library").json()["items"][0]["id"]
+            tracks = client.get("/api/library/album/%s" % ident).json()["tracks"]
+        by_name = {row["name"]: row["lyrics_timing"] for row in tracks}
+        assert by_name["01 - T.opus"] == ""
+        assert by_name["02 - T.opus"] == "crowded"
+        assert by_name["03 - T.opus"] == "backwards"
+
+    def test_the_counts_cost_no_second_walk(self, tmp_path, monkeypatch):
+        """They used to: bad_timing_count re-read every .lrc on its own.
+
+        Both numbers now come out of the read scan_albums already does,
+        so the tree is walked once per request rather than twice.
+        """
+        import beetdrop.libraryview as libraryview
+
+        config = self._library(tmp_path)
+        reads = []
+        real = libraryview.read_sidecar
+        monkeypatch.setattr(libraryview, "read_sidecar",
+                            lambda p: (reads.append(p), real(p))[1])
+        with TestClient(create_app(config)) as client:
+            client.get("/api/stats")
+        assert len(reads) == 3, "each sidecar should be read exactly once"
+
+
 class TestAlbumCovers:
     """Library rows never showed artwork, because nothing served it.
 

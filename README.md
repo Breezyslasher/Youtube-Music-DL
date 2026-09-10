@@ -88,6 +88,17 @@ Standalone: no beets, no external tagger, one container.
    library, and a tag worth reading later is one that never guessed. Any
    writer's `[re:]` tag is understood, not just Beetdrop's, so a tool that
    names itself the same way shows up as its own source on Stats.
+   Two kinds of unsound word timing are reported and can be filtered in
+   Library. Timing that jumps *backwards* mid-line only comes from a bad
+   conversion, and the upgrade pass repairs it. Timing that is *crowded* -
+   several words within a few hundredths of a second, which nobody can
+   sing - is what a forced aligner leaves on a line holding more words
+   than its timing can fit: the tail gets pinned at the minimum step the
+   writer allows. That one passes every other check, since the times
+   still increase, the line timing is real and the words are right, so
+   without this nothing found it and a word-by-word highlighter silently
+   skips the words that share an instant. Both counts come out of the
+   same read of each sidecar as everything else on those screens.
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the
@@ -188,7 +199,9 @@ decides it. Two screens are new:
 
 Both are read on demand rather than cached. At 5,794 tracks the walk plus
 a read of every sidecar measures well under a second, and a second copy
-of the truth is a thing that can go stale. Embedded tags are deliberately
+of the truth is a thing that can go stale. One walk and one read per
+sidecar: state, source and timing faults all come out of the same parse,
+which is what the timing counts used to need a second walk for. Embedded tags are deliberately
 not read: a mutagen open per file is the one part that is not free, and
 nothing on these screens needs it.
 

@@ -288,7 +288,8 @@
             <span class="grow">{{ track.name }}</span>
             <span class="sub">
               <span class="lyricdot" :class="track.lyrics"></span>{{ track.lyrics }}<template
-                v-if="track.lyrics_source"> &middot; {{ sourceName(track.lyrics_source) }}</template>
+                v-if="track.lyrics_source"> &middot; {{ sourceName(track.lyrics_source) }}</template><template
+                v-if="track.lyrics_timing"> &middot; <span class="warntext">{{ track.lyrics_timing }}</span></template>
             </span>
           </div>
         </div>
@@ -347,7 +348,17 @@
           <span><i class="swatch" style="background:var(--panel-3)"></i>{{ stats.lyrics.none.toLocaleString() }} none</span>
         </div>
         <p v-if="stats.lyrics.bad_timing" class="note">
-          {{ stats.lyrics.bad_timing }} have word timing that jumps backwards mid-line.
+          {{ stats.lyrics.bad_timing }} have word timing that jumps backwards
+          mid-line &mdash; the upgrade pass repairs those.
+        </p>
+        <p v-if="stats.lyrics.crowded" class="note">
+          {{ stats.lyrics.crowded }} have words packed too tight to be sung
+          &mdash; a line with more words than its timing can hold. They pass
+          every other check, so nothing else finds them.
+          <button type="button" class="linkbtn"
+                  @click="libraryFilter = 'crowded'; goTo('library'); loadLibrary()">
+            Show them in Library
+          </button>
         </p>
 
         <template v-if="stats.lyrics.by_source && stats.lyrics.by_source.length">
