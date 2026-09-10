@@ -283,7 +283,10 @@
           <div v-for="track in albumTracks" :key="track.path" class="trackrow">
             <span class="trackno">{{ track.number || '-' }}</span>
             <span class="grow">{{ track.name }}</span>
-            <span class="sub"><span class="lyricdot" :class="track.lyrics"></span>{{ track.lyrics }}</span>
+            <span class="sub">
+              <span class="lyricdot" :class="track.lyrics"></span>{{ track.lyrics }}<template
+                v-if="track.lyrics_source"> &middot; {{ sourceName(track.lyrics_source) }}</template>
+            </span>
           </div>
         </div>
       </div>
@@ -343,6 +346,26 @@
         <p v-if="stats.lyrics.bad_timing" class="note">
           {{ stats.lyrics.bad_timing }} have word timing that jumps backwards mid-line.
         </p>
+
+        <template v-if="stats.lyrics.by_source && stats.lyrics.by_source.length">
+          <span class="label" style="margin-top:6px">By source</span>
+          <div class="barlist">
+            <div v-for="row in stats.lyrics.by_source" :key="row.source" class="barrow">
+              <span style="width:88px" class="mono">{{ sourceName(row.source) }}</span>
+              <span class="bartrack">
+                <span class="barfill" :class="{faint: row.source === 'untagged'}"
+                      :style="{width: sourceShare(row) + '%'}"></span>
+              </span>
+              <span class="barnum">{{ row.count.toLocaleString() }}</span>
+            </div>
+          </div>
+          <p v-if="untaggedCount" class="note">
+            {{ untaggedCount.toLocaleString() }}
+            {{ untaggedCount === 1 ? 'was' : 'were' }} written before Beetdrop
+            recorded a source. That number only falls as later passes rewrite
+            them - it does not mean the source is unknowable, just unrecorded.
+          </p>
+        </template>
         <div class="chiprow" style="margin-top:8px">
           <button type="button" class="primary" @click="scanLyrics(false)">
             Fetch missing ({{ stats.lyrics.none.toLocaleString() }})

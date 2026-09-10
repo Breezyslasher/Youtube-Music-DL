@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import beetdrop.backfill as backfill
+from beetdrop.lyrics import strip_source
 from beetdrop.app import create_app
 from beetdrop.backfill import (
     backfill_lyrics,
@@ -213,8 +214,8 @@ class TestSyntheticDetection:
                             lambda a, t, al, d: SYNTHETIC)
         monkeypatch.setattr(lyrics_module.musixmatch, "fetch_synced",
                             lambda *a, **k: REAL)
-        assert lyrics_module.fetch_synced_lyrics(
-            "A", "S", musixmatch_token="tok") == REAL
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "A", "S", musixmatch_token="tok")) == REAL
 
 
 class TestPurge:
@@ -778,7 +779,7 @@ class TestChainDefersOnlyWhenEmptyHanded:
                         apple_exc=LyricsUnavailable("Apple 429"))
         got = ly.fetch_synced_lyrics("A", "S", apple_token="t",
                                      word_by_word=True)
-        assert got == "[00:01.00]found"
+        assert strip_source(got) == "[00:01.00]found"
 
     def test_empty_handed_with_a_source_down_defers(self, monkeypatch):
         from beetdrop.lyrics import LyricsUnavailable
@@ -1243,6 +1244,44 @@ class TestTheLibraryAndStatsEndpoints:
         assert album["lyrics"] == {"word": 1, "line": 1, "junk": 0, "none": 1}
         assert album["format"] == "opus" and album["verified"] is True
 
+    def test_stats_break_the_sidecars_down_by_source(self, tmp_path):
+        """Which source wrote each .lrc, which nothing recorded before.
+
+        Without it, "1,861 line-level" cannot be turned into "how many
+        does Apple have no words for", and a repair pass has no way to
+        leave the good files alone.
+        """
+        from beetdrop.lyrics import stamp_source
+
+        config = self._library(tmp_path)
+        album = config.music_root / "Dolly Parton" / "9 to 5 and Odd Jobs (1980)"
+        (album / "01 - Track.lrc").write_text(
+            stamp_source("[00:01.00]<00:01.00>word", "apple"))
+        with TestClient(create_app(config)) as client:
+            stats = client.get("/api/stats").json()
+        counted = {row["source"]: row["count"]
+                   for row in stats["lyrics"]["by_source"]}
+        assert counted["apple"] == 1
+        # The other sidecar predates the tag. Untagged means unrecorded,
+        # never "not Apple", so it is counted apart rather than guessed.
+        assert counted["untagged"] == 1
+
+    def test_a_track_row_says_who_wrote_its_sidecar(self, tmp_path):
+        from beetdrop.lyrics import stamp_source
+
+        config = self._library(tmp_path)
+        album = config.music_root / "Dolly Parton" / "9 to 5 and Odd Jobs (1980)"
+        (album / "02 - Track.lrc").write_text(
+            stamp_source("[00:01.00]line only", "lrclib"))
+        with TestClient(create_app(config)) as client:
+            listing = client.get("/api/library?sort=az").json()
+            ident = [a for a in listing["items"]
+                     if a["artist"] == "Dolly Parton"][0]["id"]
+            tracks = client.get("/api/library/album/%s" % ident).json()["tracks"]
+        by_name = {row["name"]: row for row in tracks}
+        assert by_name["02 - Track.opus"]["lyrics_source"] == "lrclib"
+        assert by_name["01 - Track.opus"]["lyrics_source"] == ""
+
     def test_a_review_grab_is_its_own_unverified_album(self, tmp_path):
         config = self._library(tmp_path)
         with TestClient(create_app(config)) as client:
@@ -1287,8 +1326,9 @@ class TestTheLibraryAndStatsEndpoints:
         assert stats["tracks"] == 4 and stats["albums"] == 2
         assert stats["incomplete_albums"] == 1
         assert stats["review_count"] == 1
-        assert stats["lyrics"] == {"word": 1, "line": 1, "junk": 0,
-                                   "none": 2, "bad_timing": 0}
+        assert {key: stats["lyrics"][key]
+                for key in ("word", "line", "junk", "none", "bad_timing")} \
+            == {"word": 1, "line": 1, "junk": 0, "none": 2, "bad_timing": 0}
         assert 74 < stats["verified_pct"] < 76      # 3 of 4 verified
 
     def test_stats_says_when_the_job_history_is_short(self, tmp_path):

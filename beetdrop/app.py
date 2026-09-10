@@ -34,7 +34,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, apple, applesignin, musixmatch, updater
+from . import __version__, apple, applesignin, lyrics, musixmatch, updater
 from .auth import (
     LoginThrottle,
     check_session_token,
@@ -649,9 +649,13 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
 
     def _lyrics_for(song_id: str, word: bool):
         config = effective_config()
-        return apple.lyrics_for_song(
+        lrc = apple.lyrics_for_song(
             apple.fetch_developer_token(), config.apple_token,
             config.apple_storefront or "us", song_id, word_by_word=word)
+        # Tagged even though this one is downloaded rather than filed:
+        # the file often ends up in a library later, and a sidecar that
+        # cannot say where it came from is the problem being fixed.
+        return lyrics.stamp_source(lrc, "apple") if lrc else lrc
 
     @app.get("/api/lyrics/preview", dependencies=[protected])
     async def api_lyrics_preview(song_id: str, word: bool = False):
@@ -673,11 +677,13 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
             # line-level. This is Apple having no lyrics at all.
             raise HTTPException(status_code=404,
                                 detail="Apple has no lyrics for that one")
-        from .lyrics import has_word_timing
+        from .lyrics import has_word_timing, strip_source
         # word_level says what actually came back, which is not always
         # what was asked for - the page tells the person which they got.
+        # The count is of the lyrics; the provenance header is part of
+        # the file but is not a line of the song.
         return {"lrc": lrc, "word_level": has_word_timing(lrc),
-                "lines": len(lrc.splitlines())}
+                "lines": len(strip_source(lrc).splitlines())}
 
     @app.get("/api/lyrics/download", dependencies=[protected])
     async def api_lyrics_download(song_id: str, word: bool = False,

@@ -61,6 +61,15 @@ Standalone: no beets, no external tagger, one container.
    --refresh`) removes existing placeholder sidecars - whatever wrote
    them - and looks those tracks up again. The check is timing-only, so
    real lyrics in any language, romaji included, are never deleted.
+   Every sidecar Beetdrop writes records where it came from, in the
+   standard `[re:]` LRC tag players already ignore:
+   `[re:beetdrop 0.62.0 apple word]` - the build, the source, and whether
+   the file ended up word-by-word or line-level. Nothing on disk used to
+   say, which is why repairing a rendering defect meant re-fetching every
+   word-level file rather than the ones actually spoiled, and why "how
+   many line-level tracks does Apple have no words for" had no answer.
+   Stats breaks the library down by source; a file written before this
+   counts as "untagged", which means unrecorded and never "not Apple".
 
 Grabs that cannot be verified against MusicBrainz are filed under
 _review/ with YouTube-derived tags and an unverified marker, so the
@@ -153,7 +162,8 @@ decides it. Two screens are new:
   album lists its tracks with per-track lyrics state.
 - **Stats** - library health: coverage, formats, grab reliability and a
   14-day activity band, with the lyrics passes labelled by how many
-  tracks each would touch.
+  tracks each would touch, and the sidecars broken down by which source
+  wrote them.
 
 Both are read on demand rather than cached. At 5,794 tracks the walk plus
 a read of every sidecar measures well under a second, and a second copy

@@ -13,11 +13,11 @@ from __future__ import annotations
 import re
 from collections import Counter
 from difflib import SequenceMatcher
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import requests
 
-from . import apple, musixmatch
+from . import __version__, apple, musixmatch
 from .matching import base_title, normalize_artist
 from .mb import USER_AGENT
 
@@ -71,6 +71,65 @@ def lrc_times(lrc: str) -> list:
             value += int(frac) / (100.0 if len(frac) <= 2 else 1000.0)
         times.append(value)
     return times
+
+
+# Provenance. Nothing on disk used to say which source wrote a sidecar
+# or which build rendered it, so every pass over the library had to treat
+# a good file and a bad one identically - which is why repairing the
+# syllable-splitting defect meant re-fetching all 1,223 word-level files
+# rather than the handful that were actually spoiled. The tag is written
+# on the way out so a later pass can tell them apart and leave the good
+# ones alone.
+#
+# [re:] is the standard LRC id tag for the program that created the file,
+# so players already ignore it; anything reading id tags sees a normal
+# one rather than something invented. Payload is
+# "beetdrop <version> <source> <line|word>".
+_SOURCE_TAG = re.compile(r"^\[re:beetdrop([^\]]*)\]\r?\n?", re.M)
+
+
+class Provenance(NamedTuple):
+    """Who wrote a sidecar. Empty strings when it carries no tag - which
+    is every file written before this, so absent means unknown and never
+    "not Apple"."""
+
+    version: str = ""
+    source: str = ""
+    timing: str = ""
+
+
+def lyric_provenance(lrc: str) -> Provenance:
+    """The source tag on an LRC, if it has one."""
+    found = _SOURCE_TAG.search(lrc or "")
+    if not found:
+        return Provenance()
+    parts = found.group(1).split()
+    parts += [""] * (3 - len(parts))
+    return Provenance(parts[0], parts[1], parts[2])
+
+
+def strip_source(lrc: str) -> str:
+    """An LRC without its provenance header - the text the source gave.
+
+    For comparing two sidecars by their lyrics: a file rewritten by a
+    later build differs in its tag and in nothing else, and that is not
+    a difference worth acting on.
+    """
+    return _SOURCE_TAG.sub("", lrc or "", count=1)
+
+
+def stamp_source(lrc: str, source: str) -> str:
+    """Record who this LRC came from, replacing any existing tag.
+
+    Timing is read from the text rather than passed in: a word-by-word
+    request that Apple only had line timing for still returns, and the
+    tag has to describe the file that was actually written.
+    """
+    if not lrc:
+        return lrc
+    body = strip_source(lrc)
+    timing = "word" if has_word_timing(body) else "line"
+    return "[re:beetdrop %s %s %s]\n%s" % (__version__, source, timing, body)
 
 
 def looks_synthetic(lrc: str) -> bool:
@@ -376,7 +435,7 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
     if word_by_word and apple_token:
         lrc = source("apple")
         if usable(lrc) and has_word_timing(lrc):
-            return lrc
+            return stamp_source(lrc, "apple")
 
     if word_only:
         # Nothing else can answer this question, so stop here rather than
@@ -388,5 +447,5 @@ def fetch_synced_lyrics(artist: str, title: str, album: str = "",
     for name in order:
         lrc = source(name)
         if usable(lrc):
-            return lrc
+            return stamp_source(lrc, name)
     return give_up()

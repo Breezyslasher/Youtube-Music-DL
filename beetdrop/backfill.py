@@ -760,10 +760,14 @@ def _lyrics_by_choice(config: Config, song_id: str,
                       word_by_word: bool = False) -> Optional[str]:
     """Lyrics for a track someone has identified by hand."""
     from . import apple
+    from .lyrics import stamp_source
     developer = apple.fetch_developer_token()
-    return apple.lyrics_for_song(developer, config.apple_token,
-                                 config.apple_storefront or "us", song_id,
-                                 word_by_word=word_by_word)
+    lrc = apple.lyrics_for_song(developer, config.apple_token,
+                                config.apple_storefront or "us", song_id,
+                                word_by_word=word_by_word)
+    # Hand-picked, but still Apple's text: a sidecar is tagged by where
+    # the words came from, not by who chose the song.
+    return stamp_source(lrc, "apple") if lrc else lrc
 
 
 def backfill_lyrics(

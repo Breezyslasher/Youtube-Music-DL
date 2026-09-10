@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import beetdrop.jobs as jobs_module
 from beetdrop.app import create_app
 from beetdrop.config import Config
+from beetdrop.lyrics import lyric_provenance, strip_source
 from beetdrop.events import QUEUE_LIMIT, Broadcaster, sse_format
 from beetdrop.grab import GrabOutcome
 from beetdrop.search import Result
@@ -320,8 +321,11 @@ class TestLyricsSearchAndDownload:
         with self._client(tmp_path, monkeypatch, self.WORD) as client:
             body = client.get(
                 "/api/lyrics/preview?song_id=1&word=true").json()
-        assert body["lrc"] == self.WORD
+        assert strip_source(body["lrc"]) == self.WORD
         assert body["word_level"] is True and body["lines"] == 1
+        # The file says where it came from, so a copy that later lands
+        # in a library is not another untagged sidecar.
+        assert lyric_provenance(body["lrc"]).source == "apple"
 
     def test_asking_for_words_and_getting_lines_is_reported_not_refused(
             self, tmp_path, monkeypatch):
@@ -351,7 +355,7 @@ class TestLyricsSearchAndDownload:
                 "/api/lyrics/download?song_id=1&word=true"
                 "&name=Dolly Parton - 9 to 5.lrc")
         assert response.status_code == 200
-        assert response.text == self.WORD
+        assert strip_source(response.text) == self.WORD
         assert response.headers["content-disposition"] == (
             'attachment; filename="Dolly Parton - 9 to 5.lrc"')
 

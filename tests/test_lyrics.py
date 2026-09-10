@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import beetdrop.lyrics as lyrics_module
+from beetdrop.lyrics import strip_source
 from beetdrop.app import create_app
 from beetdrop.config import Config
 from beetdrop.library import write_lyrics_sidecar
@@ -28,7 +29,8 @@ class TestFetchSynced:
                             lambda *a, **k: FakeResp(data={
                                 "syncedLyrics": "[00:01.00]Hello\n[00:03.00]World",
                                 "plainLyrics": "Hello\nWorld"}))
-        lrc = lyrics_module.fetch_synced_lyrics("Artist", "Song", "Album", 200)
+        lrc = strip_source(
+            lyrics_module.fetch_synced_lyrics("Artist", "Song", "Album", 200))
         assert lrc.startswith("[00:01.00]Hello")
 
     def test_plain_only_is_skipped(self, monkeypatch):
@@ -64,8 +66,8 @@ class TestLrclibCascade:
                 return {"ok": False}
             return {"data": {"syncedLyrics": "[00:01.00]A\n[00:05.00]B"}}
         calls = self._router(monkeypatch, handler)
-        assert lyrics_module.fetch_synced_lyrics(
-            "Artist", "Song", "Wrong Album", 200) == "[00:01.00]A\n[00:05.00]B"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "Artist", "Song", "Wrong Album", 200)) == "[00:01.00]A\n[00:05.00]B"
         assert len(calls) == 2  # strict, then album dropped
 
     def test_falls_back_to_primary_artist_and_bare_title(self, monkeypatch):
@@ -75,8 +77,8 @@ class TestLrclibCascade:
                 return {"data": {"syncedLyrics": "[00:01.00]Thought"}}
             return {"ok": False}
         self._router(monkeypatch, handler)
-        assert lyrics_module.fetch_synced_lyrics(
-            "Billie Eilish, Khalid", "lovely (with Khalid)", "", 200) \
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "Billie Eilish, Khalid", "lovely (with Khalid)", "", 200)) \
             == "[00:01.00]Thought"
 
     def test_search_used_when_every_get_misses(self, monkeypatch):
@@ -92,8 +94,8 @@ class TestLrclibCascade:
                 ]}
             return {"ok": False}
         self._router(monkeypatch, handler)
-        assert lyrics_module.fetch_synced_lyrics(
-            "Artist", "Song", "", 200) == "[00:01.00]close"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "Artist", "Song", "", 200)) == "[00:01.00]close"
 
     def test_search_rejects_a_different_recording(self, monkeypatch):
         # Only a wildly different duration is on offer: not our track.
@@ -128,8 +130,8 @@ class TestLrclibCascade:
                      "syncedLyrics": "[00:01.00]Thought", "duration": 200.0}]}
             return {"ok": False}
         self._router(monkeypatch, handler)
-        assert lyrics_module.fetch_synced_lyrics(
-            "Billie Eilish", "lovely", "", 200) == "[00:01.00]Thought"
+        assert strip_source(lyrics_module.fetch_synced_lyrics(
+            "Billie Eilish", "lovely", "", 200)) == "[00:01.00]Thought"
 
     def test_search_candidates_without_synced_are_ignored(self, monkeypatch):
         def handler(url, params):
