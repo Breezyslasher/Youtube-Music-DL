@@ -68,6 +68,9 @@ const app = createApp({
       librarySort: "added",
       loadingLibrary: false,
       selectedAlbum: null,
+      // Albums whose cover.jpg would not load. Falling back to the
+      // stripe placeholder beats a broken-image icon per row.
+      coverBroken: {},
       albumTracks: [],
       stats: null,
       loadingStats: false,
@@ -286,6 +289,7 @@ const app = createApp({
     async loadLibrary() {
       this.loadingLibrary = true;
       this.selectedAlbum = null;
+      this.coverBroken = {};
       try {
         const query = "?filter=" + encodeURIComponent(this.libraryFilter)
           + "&sort=" + encodeURIComponent(this.librarySort)
@@ -303,6 +307,14 @@ const app = createApp({
       } finally {
         this.loadingLibrary = false;
       }
+    },
+
+    coverUrl(album) {
+      // The album's mtime rides in the query so a replaced cover comes
+      // back under a new URL; the response is then cached for a week
+      // rather than revalidated once per row on every visit.
+      return "/api/library/album/" + encodeURIComponent(album.id)
+        + "/cover?v=" + Math.round(album.added_at || 0);
     },
 
     albumLyricState(album) {

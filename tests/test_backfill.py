@@ -1213,6 +1213,92 @@ class TestSearchingForAMissingTrackByHand:
         assert "/api/lyrics/search?q=" in source
 
 
+class TestAlbumCovers:
+    """Library rows never showed artwork, because nothing served it.
+
+    cover.jpg is written into the album folder inside the library mount,
+    which the browser has no path to - so the row drew the placeholder
+    every time, whether or not a cover existed.
+    """
+
+    def _library(self, tmp_path, cover=b"\xff\xd8\xff-jpeg-bytes"):
+        root = tmp_path / "music"
+        album = root / "Dolly Parton" / "9 to 5 (1980)"
+        album.mkdir(parents=True)
+        (album / "01 - T.opus").write_bytes(b"x")
+        if cover is not None:
+            (album / "cover.jpg").write_bytes(cover)
+        bare = root / "Someone" / "No Art (1990)"
+        bare.mkdir(parents=True)
+        (bare / "01 - T.opus").write_bytes(b"x")
+        return Config(music_root=root, scratch_root=tmp_path / "s",
+                      config_dir=tmp_path / "c")
+
+    def _ids(self, client):
+        items = client.get("/api/library?sort=az").json()["items"]
+        return {a["artist"]: a for a in items}
+
+    def test_the_listing_says_which_albums_have_one(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            rows = self._ids(client)
+        assert rows["Dolly Parton"]["has_cover"] is True
+        assert rows["Someone"]["has_cover"] is False
+
+    def test_the_cover_is_served(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            ident = self._ids(client)["Dolly Parton"]["id"]
+            response = client.get("/api/library/album/%s/cover" % ident)
+        assert response.status_code == 200
+        assert response.content == b"\xff\xd8\xff-jpeg-bytes"
+        assert response.headers["content-type"].startswith("image/jpeg")
+        # Cached hard: the page puts the album mtime in the query, so a
+        # replaced cover arrives under a different URL.
+        assert "max-age" in response.headers.get("cache-control", "")
+
+    def test_a_png_cover_is_served_as_png(self, tmp_path):
+        config = self._library(tmp_path, cover=None)
+        album = config.music_root / "Dolly Parton" / "9 to 5 (1980)"
+        (album / "cover.png").write_bytes(b"\x89PNG-bytes")
+        with TestClient(create_app(config)) as client:
+            ident = self._ids(client)["Dolly Parton"]["id"]
+            response = client.get("/api/library/album/%s/cover" % ident)
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/png")
+
+    def test_an_album_with_no_cover_is_a_404(self, tmp_path):
+        config = self._library(tmp_path)
+        with TestClient(create_app(config)) as client:
+            ident = self._ids(client)["Someone"]["id"]
+            assert client.get(
+                "/api/library/album/%s/cover" % ident).status_code == 404
+
+    def test_an_id_pointing_outside_the_library_is_refused(self, tmp_path):
+        # The id is base64 of a relative path and arrives over HTTP, so
+        # it is a request to read a file, and has to be treated as one.
+        import base64
+
+        config = self._library(tmp_path)
+        secret = tmp_path / "cover.jpg"
+        secret.write_bytes(b"not yours")
+        escape = base64.urlsafe_b64encode(b"../..").decode().rstrip("=")
+        with TestClient(create_app(config)) as client:
+            assert client.get(
+                "/api/library/album/%s/cover" % escape).status_code == 404
+
+    def test_only_the_cover_names_filing_writes_are_served(self, tmp_path):
+        # Not a general file server for the album folder.
+        config = self._library(tmp_path)
+        album = config.music_root / "Dolly Parton" / "9 to 5 (1980)"
+        (album / "cover.jpg").unlink()
+        (album / "secrets.jpg").write_bytes(b"nope")
+        with TestClient(create_app(config)) as client:
+            ident = self._ids(client)["Dolly Parton"]["id"]
+            assert client.get(
+                "/api/library/album/%s/cover" % ident).status_code == 404
+
+
 class TestTaggingWhatAlreadyExists:
     """Establishing the source of sidecars written before the tag.
 

@@ -258,7 +258,10 @@
     </div>
     <template v-for="album in libraryItems" :key="album.id">
       <div class="librow" @click="selectAlbum(album)">
-        <span class="art" :class="{review: !album.verified}"></span>
+        <img v-if="album.has_cover && !coverBroken[album.id]" class="art"
+             :src="coverUrl(album)" alt="" loading="lazy" decoding="async"
+             @error="coverBroken[album.id] = true">
+        <span v-else class="art" :class="{review: !album.verified}"></span>
         <span class="col-name">
           <span class="name" :class="{'title-review': !album.verified}">{{ album.album }}</span>
           <span v-if="!album.verified" class="pill">_review</span>

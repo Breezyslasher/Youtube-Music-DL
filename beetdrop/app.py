@@ -780,6 +780,38 @@ def create_app(base_config: Optional[Config] = None) -> FastAPI:
         tracks = await asyncio.to_thread(album_tracks, folder)
         return {"path": str(folder), "tracks": tracks}
 
+    @app.get("/api/library/album/{ident}/cover", dependencies=[protected])
+    async def api_library_album_cover(ident: str):
+        """The cover.jpg in an album's folder.
+
+        Served rather than linked. The file sits inside the library
+        mount, which the browser has no path to, so Library rows had
+        nothing to point an <img> at and always drew the placeholder.
+
+        Only the three names filing writes are served, and the id is
+        resolved through album_path, which refuses anything outside the
+        library - the ident arrives over HTTP.
+        """
+        from .libraryview import COVER_NAMES, album_path
+
+        config = effective_config()
+        folder = album_path(config.music_root, ident)
+        if folder is None or not folder.is_dir():
+            raise HTTPException(status_code=404, detail="no such album")
+        for name in COVER_NAMES:
+            candidate = folder / name
+            if candidate.is_file():
+                return FileResponse(
+                    candidate,
+                    media_type="image/png" if name.endswith(".png")
+                    else "image/jpeg",
+                    # The page puts the album's mtime in the query, so a
+                    # replaced cover arrives under a different URL and
+                    # this can be cached hard. Private: a library's
+                    # artwork is not for a shared proxy to keep.
+                    headers={"Cache-Control": "private, max-age=604800"})
+        raise HTTPException(status_code=404, detail="no cover")
+
     @app.get("/api/stats", dependencies=[protected])
     async def api_stats():
         """Library health, in one read of the tree plus the jobs table."""

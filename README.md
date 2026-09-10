@@ -177,7 +177,10 @@ decides it. Two screens are new:
 - **Library** - what is on disk, as albums, with filter chips for the
   maintenance lists that used to be buried in Settings: missing lyrics,
   line-level only, unverified, gaps in numbering, junk. Expanding an
-  album lists its tracks with per-track lyrics state.
+  album lists its tracks with per-track lyrics state. Rows show the
+  cover.jpg from the album folder, served by the app since the library
+  mount is not a path the browser can reach; an album without one keeps
+  the stripe placeholder rather than a broken image.
 - **Stats** - library health: coverage, formats, grab reliability and a
   14-day activity band, with the lyrics passes labelled by how many
   tracks each would touch, and the sidecars broken down by which source
