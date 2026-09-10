@@ -139,7 +139,13 @@ Apple has only line timing for still downloads, and the page says so.
 The UI is a shell rather than one page: a sidebar on desktop
 (Search / Queue / Library / Stats / Repair / Settings) and a bottom tab
 bar on phone, with the queue as a persistent right rail instead of a
-sheet you have to open. Two screens are new:
+sheet you have to open. Nothing floats any more - the old top brand bar,
+the fixed queue footer, the search bar pinned to the lower half of a
+phone screen, and the very long Settings sheet are all gone; Settings is
+a destination like any other, and on phone the queue is a one-line strip
+above the tab bar. Which shape you get is the Layout setting (auto
+follows screen size at 900px), and that one class is the only thing that
+decides it. Two screens are new:
 
 - **Library** - what is on disk, as albums, with filter chips for the
   maintenance lists that used to be buried in Settings: missing lyrics,

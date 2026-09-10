@@ -5,7 +5,21 @@
 const { createApp } = Vue;
 
 const LS_LAYOUT = "beetdrop.layout";
-const MOBILE_QUERY = "(max-width: 700px)";
+// The Workbench breakpoint: below this the sidebar becomes a bottom tab
+// bar and the queue rail becomes the strip above it.
+const MOBILE_QUERY = "(max-width: 900px)";
+
+// Tab-bar icons as bare path data. Circles are written as arcs so every
+// icon is one <path v-for> and no shape needs its own element.
+const ICONS = {
+  search: ["M18 11a7 7 0 1 1-14 0 7 7 0 0 1 14 0", "M20 20l-4-4"],
+  queue: ["M4 7h16", "M4 12h16", "M4 17h10"],
+  library: ["M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
+            "M13 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0"],
+  stats: ["M5 20V11", "M12 20V4", "M19 20v-6"],
+  settings: ["M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+             "M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.02a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.02a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.02a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"],
+};
 
 const app = createApp({
   data() {
@@ -63,11 +77,9 @@ const app = createApp({
       signingInApple: false,
 
       jobs: [],
-      queueOpen: false,
 
       settings: null,
       health: null,
-      settingsOpen: false,
       draft: {},
 
       passwordNeeded: false,
@@ -97,13 +109,36 @@ const app = createApp({
       ];
     },
     tabItems() {
+      // Repair is absent by design: it is reached from Library and from a
+      // job card, and five items is what fits a phone without shrinking
+      // the tap targets. Icons are inline paths - 2px stroke,
+      // currentColor - rather than an icon font or a glyph.
       return [
-        { view: "search", label: "Search" },
-        { view: "queue", label: "Queue" },
-        { view: "library", label: "Library" },
-        { view: "stats", label: "Stats" },
-        { view: "settings", label: "Settings" },
+        { view: "search", label: "Search", icon: ICONS.search },
+        { view: "queue", label: "Queue", icon: ICONS.queue },
+        { view: "library", label: "Library", icon: ICONS.library },
+        { view: "stats", label: "Stats", icon: ICONS.stats },
+        { view: "settings", label: "Settings", icon: ICONS.settings },
       ];
+    },
+    pageTitle() {
+      const item = this.navItems.find((entry) => entry.view === this.view);
+      return item ? item.label : "Beetdrop";
+    },
+    railVisible() {
+      // The rail is context beside the work, so it belongs where a grab
+      // is being started or a library is being looked through. On the
+      // Queue screen it would be the same list twice; on Stats and
+      // Settings the page wants the width.
+      return !this.mediaMobile && this.layout !== "mobile"
+        && (this.view === "search" || this.view === "library");
+    },
+    stripJob() {
+      // The phone strip shows one job: whatever is running, or the most
+      // recent one if nothing is.
+      const running = this.sortedJobs.find(
+        (j) => !["done", "failed", "cancelled"].includes(j.stage));
+      return running || this.sortedJobs[0] || null;
     },
     libraryChips() {
       const counts = this.libraryCounts;
@@ -175,10 +210,26 @@ const app = createApp({
 
     goTo(view) {
       this.view = view;
-      this.settingsOpen = view === "settings";
+      // Each destination loads itself the first time it is opened, so
+      // nothing is fetched for a screen nobody looked at.
+      if (view === "settings" && !this.settings) this.openSettings();
       if (view === "library" && !this.libraryItems.length) this.loadLibrary();
       if (view === "stats" && !this.stats) this.loadStats();
       if (view === "repair" && !this.unverified.length) this.loadUnverified();
+      // The work area is one scroller shared by every screen; without
+      // this, opening Settings from halfway down Library starts halfway
+      // down Settings.
+      this.$nextTick(() => {
+        const area = document.querySelector(".workarea");
+        if (area) area.scrollTop = 0;
+      });
+    },
+
+    jobTone(job) {
+      if (job.stage === "failed" || job.inbox_state === "unverified") {
+        return "needs-decision";
+      }
+      return ["done", "cancelled"].includes(job.stage) ? "settled" : "";
     },
 
     navBadge(view) {
@@ -560,7 +611,6 @@ const app = createApp({
           new_password: "",
         };
         await this.refreshHealth();
-        this.settingsOpen = true;
       } catch (err) {
         if (err.message !== "password required") this.showToast("Cannot load settings: " + err.message);
       }
@@ -603,7 +653,6 @@ const app = createApp({
           });
           this.connectEvents();
         }
-        this.settingsOpen = false;
         this.showToast("Settings saved");
         this.refreshHealth();
       } catch (err) {
@@ -865,8 +914,7 @@ const app = createApp({
         const job = await this.api("/api/lyrics/scan" + query,
                                    { method: "POST" });
         this.upsertJob(job);
-        this.settingsOpen = false;
-        this.queueOpen = true;
+        this.goTo("queue");
         this.showToast(redoWords
           ? "Re-rendering every word-by-word sidecar"
           : upgrade
@@ -1009,6 +1057,19 @@ const app = createApp({
   mounted() {
     const media = window.matchMedia(MOBILE_QUERY);
     media.addEventListener("change", (event) => { this.mediaMobile = event.matches; });
+
+    // How much room the phone dock takes is not a constant: the queue
+    // strip comes and goes. Measure it instead of guessing, so the last
+    // row of a list is never left underneath the tab bar.
+    const dock = this.$refs.dock;
+    if (dock && window.ResizeObserver) {
+      const watch = new ResizeObserver(() => {
+        document.documentElement.style.setProperty(
+          "--dock", dock.offsetHeight + "px");
+      });
+      watch.observe(dock);
+    }
+
     this.refreshHealth();
     this.refreshJobs();
     this.connectEvents();
